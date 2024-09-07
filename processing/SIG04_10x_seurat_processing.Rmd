@@ -1,0 +1,442 @@
+---
+title: "SIG04 10x Seurat Processing"
+author: "Eric Y. Wang"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  github_document:
+    toc: true
+    html_preview: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(Seurat)
+library(hdf5r)
+library(ggplot2)
+library(clustree)
+library(cowplot)
+library(patchwork)
+library(ggpointdensity)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("functions/plotting_fxns.R")
+source("functions/scRNA_seq_analysis_functions.R")
+theme_set(theme_Publication())
+```
+
+## [Import data]{.underline}
+
+```{r}
+dataRaw1 <- Read10X_h5("C:/Users/Eric/My Drive/Lab/datasets/EYW/SIG04_10x_240816/cellranger_outs/SIG04_lane1_GEX_oBC/filtered_feature_bc_matrix.h5")
+dataRaw2 <- Read10X_h5("C:/Users/Eric/My Drive/Lab/datasets/EYW/SIG04_10x_240816/cellranger_outs/SIG04_lane2_GEX_oBC/filtered_feature_bc_matrix.h5")
+
+names(dataRaw1)
+names(dataRaw2)
+```
+
+```{r}
+subset_joint <- function(x){
+  # identify joint cells between BC and GEX dataset
+  jointCells <- intersect(colnames(x$`Gene Expression`),
+                          colnames(x$`Antibody Capture`))
+  
+  # subset each dataset to include joint cells
+  data <- vector(mode = "list")
+  data[["GEX"]] <- x$`Gene Expression`[,jointCells]
+  data[["oBC"]] <- x$`Antibody Capture`[,jointCells]
+  
+  return(data)
+}
+
+dataRaw1 <- subset_joint(dataRaw1)
+dataRaw2 <- subset_joint(dataRaw2)
+```
+
+
+### Filter Low Genes
+
+Remove genes that are expressed by less than 1 in 5000 cells (assuming 30% dropout
+rate). Set this level based on the smallest size cluster that you want to be
+detectable in the final dataset.
+
+```{r}
+dataMergeGEX <- cbind(dataRaw1$GEX,dataRaw2$GEX)
+
+# create vector of genes to keep
+keepGenes <- Matrix::rowSums(dataMergeGEX > 0) >= ncol(dataMergeGEX)*0.0002*0.3
+
+# remove genes from gex matrices
+dataRaw1$GEX <- dataRaw1$GEX[keepGenes,]
+dataRaw2$GEX <- dataRaw2$GEX[keepGenes,]
+
+rm(dataMergeGEX)
+```
+
+### Filter Low oBC
+
+```{r}
+sum(colSums(dataRaw1$oBC > 0) > 0)/ncol(dataRaw1$oBC)
+sum(colSums(dataRaw2$oBC > 0) > 0)/ncol(dataRaw2$oBC)
+```
+
+
+```{r}
+create_seurat <- function(x){
+  # load GEX counts and add celltag counts into seurat object
+  data <- CreateSeuratObject(counts = x$GEX, project = "SIG04")
+  data[["oBC"]] <- CreateAssayObject(counts = x$oBC)
+
+  return(data)
+}
+
+dataSeurat <- vector(mode = "list")
+dataSeurat[["lane1"]] <- create_seurat(dataRaw1)
+dataSeurat[["lane2"]] <- create_seurat(dataRaw2)
+
+rm(dataRaw1,dataRaw2)
+```
+
+## [Cell QC Analysis]{.underline}
+
+### Calculate QC metrics
+
+```{r}
+add_qc_metrics <- function(x){
+  DefaultAssay(x) <- "RNA"
+  # calculate percent mitochondrial reads and ratio 
+  x[["percent.mt"]] <- PercentageFeatureSet(x, pattern = "^mt-")
+  x[["percent.ribo"]] <- PercentageFeatureSet(x, pattern = "^Rpl|^Rps")
+  x[["mitoRatio"]] <- x@meta.data$percent.mt / 100
+  x[["log10GenesPerUMI"]] <- log10(x$nFeature_RNA)/log10(x$nCount_RNA)
+  x[["log10nFeature_RNA"]] <- log10(x$nFeature_RNA)
+  x[["log10nCount_RNA"]] <- log10(x$nCount_RNA)
+  
+  return(x)
+}
+
+dataSeurat <- lapply(dataSeurat, function(x) add_qc_metrics(x))
+
+metadata <- bind_rows(dataSeurat[[1]]@meta.data,dataSeurat[[2]]@meta.data) %>%
+  mutate(orig.ident = c(rep("lane1",ncol(dataSeurat[[1]])),rep("lane2",ncol(dataSeurat[[2]]))))
+```
+
+### Visualize QC distributions
+
+```{r, fig.width=15, fig.height=7}
+# enter QC values
+qcValues <- c(nFeature_RNA = 1000, nCount_RNA = 2000, percent.mt = 5)
+
+# quantify how many cells there are
+paste0("There are ", ncol(data), " cells")
+
+# Visualize the number UMIs/transcripts per cell
+p1 <- metadata %>%
+  	ggplot(aes(color=orig.ident, x=nCount_RNA, fill= orig.ident)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	ylab("Cell density") +
+  	geom_vline(xintercept = qcValues[2]) +
+    NoLegend()
+
+# Visualize the distribution of genes detected per cell via histogram
+p2 <- metadata %>% 
+  	ggplot(aes(color=orig.ident, x=nFeature_RNA, fill= orig.ident)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	geom_vline(xintercept = qcValues[1]) +
+    NoLegend()
+
+# Visualize the correlation between genes detected and number of UMIs and determine whether strong presence of cells with low numbers of genes/UMIs
+p5 <- metadata %>% 
+  	ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=percent.mt)) + 
+  	geom_point() + 
+  	scale_colour_gradient(low = "gray90", high = "black") +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	geom_vline(xintercept = qcValues[2]) +
+  	geom_hline(yintercept = qcValues[1])
+
+
+# Visualize the distribution of mitochondrial gene expression detected per cell
+p3 <- metadata %>% 
+  	ggplot(aes(color=orig.ident, x=percent.mt, fill=orig.ident)) + 
+  	geom_density(alpha = 0.2) + 
+  	geom_vline(xintercept = qcValues[3]) +
+    xlim(0,10) +
+    NoLegend()
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI
+p4 <- metadata %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = orig.ident, fill=orig.ident)) +
+  	geom_density(alpha = 0.2) +
+  	geom_vline(xintercept = 0.8)
+
+# Visualize the correlation between genes detected and number of UMIs with mt filter
+p6 <- metadata %>%
+    filter(percent.mt < qcValues[3]) %>%
+  	ggplot(aes(x=nCount_RNA, y=nFeature_RNA)) + 
+    geom_pointdensity() +
+    scale_color_viridis_c() +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	geom_vline(xintercept = qcValues[2]) +
+  	geom_hline(yintercept = qcValues[1])
+
+plot_grid(p1,p2,p3,p4,p5,p6, ncol = 3)
+```
+
+```{r}
+metadata %>%
+  	ggplot(aes(color=orig.ident, x=nCount_oBC, fill= orig.ident)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	ylab("Cell density")
+```
+It's weird that lane 2 which consists of sorted cells has such a skewed distribution compared to lane 1. Theoretically you would think that sorting would improve barcode detection. 
+
+### Subset data based on QC metrics
+
+```{r}
+dataQC <- lapply(dataSeurat, function(x) subset(x, subset = (nFeature_RNA >= qcValues[1]) & (nCount_RNA >=qcValues[2]) & (percent.mt < qcValues[3])))
+```
+
+Remove cells that have 0 oBC counts
+
+```{r}
+paste0(ncol(subset(dataQC[[2]], subset = nCount_oBC > 0))/ncol(dataQC[[2]])," of cells have oBC > 0")
+
+dataQC[[2]] <- subset(dataQC[[2]], subset = nCount_oBC > 0)
+```
+
+
+## [HTODemux oBC]{.underline}
+
+Use oBC pseudo because HTODemux will throw an error if a feature has no counts. oBC pseudo has an additional count added to all cells for all features
+
+```{r}
+dataQC <- lapply(dataQC, function(x) NormalizeData(x, assay = "oBC", normalization.method = "CLR"))
+dataQC <- lapply(dataQC, function(x) HTODemux(x, assay = "oBC"))
+
+test <- dataQC[[2]]
+test <- HTODemux(test, assay = "oBC", nsamples = 1000)
+
+```
+
+```{r, fig.width=6, fig.height=5}
+# Calculate a UMAP embedding of the HTO data
+DefaultAssay(dataQC$lane1) <- "oBC"
+DefaultAssay(dataQC$lane2) <- "oBC"
+
+dataQC <- lapply(dataQC, function(x) ScaleData(x, features = rownames(x),
+                                                       verbose = FALSE)) %>%
+  lapply(function(x) RunPCA(x, features = rownames(x), approx = FALSE, verbose = F)) %>%
+  lapply(function(x) RunUMAP(x, dims = 1:nrow(x), verbose = F))
+```
+
+```{r, fig.width=12, fig.height=8}
+plotHTO <- function(x){
+  # create heatmap of HTO expression
+  p1 <- HTOHeatmap(x, assay = "HTO")
+  Idents(x) <- "HTO_classification.global"
+  # compare UMI number for singlets, doublets, negatives
+  p2 <- VlnPlot(x, features = "nCount_RNA", pt.size = 0.1, log = TRUE, alpha = 0.5)
+  # plot HTO data on tSNE
+  p3 <- DimPlot(x)
+  
+  (p3+p2)/p1
+}
+
+plotHTO(dataSeurat$lane1)
+plotHTO(dataSeurat$lane2)
+```
+
+```{r, fig.width=12, fig.height=16}
+# vsiualize ridge plots for HTO
+Idents(dataSeurat$lane1) <- "HTO_maxID"
+Idents(dataSeurat$lane2) <- "HTO_maxID"
+
+lapply(dataSeurat, function(x) RidgePlot(x, assay = "HTO", features = rownames(x[["HTO"]]), ncol = 3))
+```
+
+
+
+
+## [Merge 10x lanes into single dataset]{.underline}
+
+```{r}
+data <- merge(dataSeurat[[1]],dataSeurat[[2]],
+              add.cell.ids = c("lane1","lane2"), project = "SIG04") %>%
+  JoinLayers()
+
+# rename orig.ident based on
+data$orig.ident <- paste(data$orig.ident, gsub("_.*","", colnames(data)), sep = "-")
+
+rm(dataSeurat)
+```
+
+
+
+
+## [Remove HTO negatives]{.underline}
+
+```{r}
+Idents(dataSub) <- "HTO_classification.global"
+dataSub <- subset(dataSub, idents = "Negative", invert = T)
+```
+
+```{r}
+dataSub@meta.data %>%
+  group_by(hash.ID) %>%
+  summarize(num_cells = n()) %>%
+  mutate(percent = num_cells/sum(num_cells)*100)
+```
+
+
+## [Score for sources of variation]{.underline}
+
+### Cell cycle variation
+```{r}
+DefaultAssay(dataSubQC) <- "RNA"
+dataSubQC <- NormalizeData(dataSubQC)
+# Identify the most variable genes
+dataSubQC <- FindVariableFeatures(dataSubQC, 
+                     selection.method = "vst",
+                     nfeatures = 2000, 
+                     verbose = FALSE)
+# Scale the counts
+dataSubQC <- ScaleData(dataSubQC)
+
+cellCycleGenes <- read_csv("C:/Users/Eric/My Drive/Lab/datasets/gene_sets/cell_cycle_genes_seurat_mouse.csv")
+# cellCycleGenes <- read_csv("/Users/wange7/Library/CloudStorage/GoogleDrive-ericwang314@gmail.com/My Drive/Lab/datasets/gene_sets/cell_cycle_genes_seurat_mouse.csv")
+
+dataSubQC <- CellCycleScoring(dataSubQC, s.features = cellCycleGenes$s_genes,
+                            g2m.features = cellCycleGenes$g2m_genes)
+```
+
+```{r, fig.width=8, fig.height=4}
+# Plot the PCA colored by cell cycle phase
+dataSubQC <- RunPCA(dataSubQC, verbose = FALSE)
+DimPlot(dataSubQC,
+        reduction = "pca",
+        group.by= "Phase",
+        split.by = "Phase")
+```
+
+### Mitochondrial variation
+
+```{r, fig.width = 12, fig.height=4}
+# Check quartile values
+mitoQuart <- summary(dataSubQC@meta.data$mitoRatio)
+
+# Turn mitoRatio into categorical factor vector based on quartile values
+dataSubQC@meta.data$mitoFr <- cut(dataSubQC@meta.data$mitoRatio, 
+                   breaks=c(-Inf, mitoQuart[2], mitoQuart[3], mitoQuart[5], Inf), 
+                   labels=c("Low","Medium","Medium high", "High"))
+
+DimPlot(dataSubQC,
+        reduction = "pca",
+        group.by= "mitoFr",
+        split.by = "mitoFr")
+```
+
+## [Data normalization/scaling]{.underline}
+
+### SCTransform
+
+```{r}
+options(future.globals.maxSize= 10000*1024^2)
+# perform SCT normalization and find variable features
+dataSubQC <- SCTransform(dataSubQC, vst.flavor = "v2",
+                       vars.to.regress = c("orig.ident","mitoRatio","Phase"),
+                       variable.features.n = 3100)
+
+# remove TCR genes from variable features
+featureVar <- VariableFeatures(dataSubQC, assay = "SCT")
+TCRgenes <- grep("^Tra[vj]|^Trb[vdj]",featureVar)
+BCRgenes <- grep("^Igk[vc]|^Igl[vc]|^Ighv",featureVar)
+featureVar[TCRgenes]
+featureVar[BCRgenes]
+
+VariableFeatures(dataSubQC, assay = "SCT") <- featureVar[-c(TCRgenes,BCRgenes)]
+
+# scale SCT variable features in RNA assay
+DefaultAssay(dataSubQC) <- "RNA"
+dataSubQC <- ScaleData(dataSubQC, features = featureVar[-c(TCRgenes,BCRgenes)])
+DefaultAssay(dataSubQC) <- "SCT"
+```
+
+### CITE
+
+```{r}
+dataSubQC <- NormalizeData(dataSubQC, assay = "CITE", normalization.method = "CLR")
+```
+
+```{r, fig.height=6, fig.width=10}
+RidgePlot(dataSubQC, assay = "CITE", features = c("CD62L","CD44"), group.by = "HTO_maxID")
+```
+
+## [Dim Reduction]{.underline}
+
+```{r}
+# run PCA using TCR/BCR excluded Variable Features
+dataSubQC <- RunPCA(dataSubQC, npcs = 60, verbose = FALSE)
+ElbowPlot(dataSubQC, ndims = 60) +
+  ggtitle("dataSubQC Elbow") +
+  scale_x_continuous(breaks = seq(0,60,3))
+```
+
+```{r}
+dimValues <- 54
+# run umap based on dimensionality from elbow plot
+dataSubQC <- RunUMAP(dataSubQC, dims = 1:dimValues, verbose = F) %>%
+  FindNeighbors(dims = 1:dimValues, verbose = FALSE) %>%
+  FindClusters(resolution = seq(0,1.2,0.1),
+               algorithm = 1)
+```
+
+```{r, fig.height=10, fig.width=6}
+clustree(dataSubQC, prefix = "SCT_snn_res.") +
+  ggtitle("dataSubQC Clustree")
+```
+
+```{r, fig.width=12, fig.height=10}
+dataSubQC$seurat_clusters <- dataSubQC$SCT_snn_res.0.8
+Idents(dataSubQC) <- dataSubQC$seurat_clusters
+p1 <- DimPlot(dataSubQC) + theme(aspect.ratio = 1)
+p2 <- DimPlot(dataSubQC, group.by = "hash.ID") + theme(aspect.ratio = 1)
+p3 <- DimPlot(dataSubQC, group.by = "crispr_classification") + theme(aspect.ratio = 1)
+(p1+p2)/(p3)
+```
+
+```{r, fig.height=25, fig.width=10}
+# perform DEG analysis on SCT data
+dataSubQC <- PrepSCTFindMarkers(dataSubQC)
+clusMarkers <- FindAllMarkers(dataSubQC, only.pos = T, assay = "SCT")
+clusMarkers <- as_tibble(clusMarkers)
+
+sigMarkers <- clusMarkers %>%
+  dplyr::filter(avg_log2FC > 1 & p_val_adj < 0.1) %>%
+  arrange(p_val_adj)
+
+top10 <- sigMarkers %>%
+    group_by(cluster) %>%
+    slice_head(n = 10) %>%
+    ungroup()
+
+top10
+```
+
+```{r}
+write_csv(sigMarkers,"analysis_outs/cluster_markers_full.csv")
+```
+
+## [Save RDS]{.underline}
+
+```{r}
+saveRDS(dataSubQC, "C:/Users/Eric/My Drive/Lab/datasets/EYW/CTR03_10x_240801/seurat_outs/CTR03_full.rds")
+```
