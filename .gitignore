@@ -1,2 +1,5 @@
-conda_env/
 .Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.DS_Store
