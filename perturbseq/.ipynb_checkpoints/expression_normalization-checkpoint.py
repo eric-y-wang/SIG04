@@ -20,6 +20,142 @@ from time import time
 import gc
 from tqdm import tqdm_notebook
 
+# MODIFIED FUNCTIONS
+
+def normalize_matrix_to_control(matrix, control_matrix, scale_by_total=True, median_umi_count=None):
+    """ Normalize expression distribution relative to a population of control (unperturbed) cells.
+    The normalization proceeds by first normalizing the UMI counts within each cell to the median
+    UMI count within the population. The control population is normalized to the same amount. 
+    The expression within the population is then Z-normalized with respect to the control 
+    distribution: i.e., for each gene the control mean is subtracted, and then these values are
+    divided by the control standard deviation.
+        
+    Args:
+        matrix: gene expression matrix to normalize (output from cellranger)
+        control_matrix: gene expression matrix of control population
+        scale_by_total: Rescale UMI counts within each cell to population median (default: True)
+        median_umi_count: If provided, set the median to normalize to. This is useful for example
+            when normalizing multiple independent lanes/gemgroups.
+    
+    Returns:
+        DataFrame of normalized expression data
+    """
+    # Convert sparse matrices to dense if necessary
+    if isinstance(matrix, pd.DataFrame) and matrix.sparse.density < 1.0:
+        print('     Densifying matrix...')
+        matrix = matrix.todense()
+    if isinstance(control_matrix, pd.DataFrame) and control_matrix.sparse.density < 1.0:
+        print('     Densifying control matrix...')
+        control_matrix = control_matrix.todense()
+
+    # Convert to numpy arrays for processing if needed
+    if isinstance(matrix, pd.DataFrame):
+        matrix = matrix.values
+    if isinstance(control_matrix, pd.DataFrame):
+        control_matrix = control_matrix.values
+
+    # Normalize to median UMI count if specified
+    if scale_by_total:
+        print("     Determining scale factors...")
+        reads_per_bc = matrix.sum(axis=1)
+        
+        if median_umi_count is None:
+            median_reads_per_bc = np.median(reads_per_bc)
+        else:
+            median_reads_per_bc = median_umi_count
+        
+        scaling_factors = median_reads_per_bc / reads_per_bc
+        
+        print("     Normalizing matrix to median")
+        m = matrix.astype(np.float64)
+        # Normalize expression within each cell by median total count
+        m *= scaling_factors[:, np.newaxis]
+        if np.mean(median_reads_per_bc) < 5000:
+            print("Scaling with a small number of reads. Are you sure this is what you want?")
+            
+        control_reads_per_bc = control_matrix.sum(axis=1)
+        
+        print("     Normalizing control matrix to median")
+        control_scaling_factors = median_reads_per_bc / control_reads_per_bc
+        c_m = control_matrix.astype(np.float64)
+        c_m *= control_scaling_factors[:, np.newaxis]
+    else:
+        m = matrix.astype(np.float64)
+        c_m = control_matrix.astype(np.float64)
+
+    control_mean = c_m.mean(axis=0)
+    control_std = c_m.std(axis=0)
+    
+    print("     Scaling matrix to control")
+    # Center and rescale the expression of each gene to average 0 and std 1
+    m_out = (m - control_mean) / control_std
+    
+    print("     Done.")
+    return pd.DataFrame(m_out, columns=np.arange(m.shape[1]), index=np.arange(m.shape[0]))
+
+def normalize_to_gemgroup_control_residuals_adata(adata, control_cells_query, **kwargs):
+    """Normalizes a multi-lane 10x experiment stored in an AnnData object.
+    Cells within each gemgroup are normalized to the control cells within the same gemgroup.
+        
+    Args:
+        adata: AnnData object to normalize
+        control_cells_query: String query to identify control cell population
+            to normalize with respect to
+        median_umi_count: Value to normalize UMI counts to across lanes. If None (the default)
+            then all cells are normalized to the median UMI count of control cells within the
+            whole experiment.
+        **kwargs: Additional arguments passed to groupby on adata.obs, useful for refined slicing.
+
+    Returns:
+        DataFrame of normalized expression data with appropriate indices.
+    
+    Example:
+        normalized_matrix = normalize_to_gemgroup_control_residuals_adata(adata,
+                                                          control_cells_query='guide_identity == "control"')
+        will produce a normalized expression matrix where cells in each gemgroup are Z-normalized 
+        with respect to the expression distribution of cells in that lane bearing the guide_identity
+        "control".
+    """
+
+    # Group cells by 'gem_group'
+    gemgroup_iterator = zip(
+        adata.obs.groupby('gem_group', observed=False),
+        adata[adata.obs.query(control_cells_query).index].obs.groupby('gem_group', observed=False)
+    )
+    
+    gem_group_matrices = dict()
+    for (i, gemgroup_pop), (_, gemgroup_control_pop) in gemgroup_iterator:
+        print('Processing gem group {0}'.format(i))
+        t = time()
+
+        # Select the data for the current gemgroup
+        gemgroup_data = adata[gemgroup_pop.index].X.copy()
+        control_data = adata[gemgroup_control_pop.index].X.copy()
+        
+        gem_group_matrices[i] = normalize_matrix_to_control(
+            gemgroup_data,
+            control_data,
+            scale_by_total=False
+        )
+        
+        # Assign the correct index
+        gem_group_matrices[i].index = gemgroup_pop.index
+        gem_group_matrices[i].columns = adata.var_names
+        
+        print(time() - t)
+    
+    print('Merging submatrices...')
+    
+    # Merge all matrices into a DataFrame
+    normalized_matrix = pd.concat(gem_group_matrices.values())
+    
+    # Ensure the rows match the original AnnData index
+    normalized_matrix = normalized_matrix.loc[adata.obs_names]
+    
+    return normalized_matrix
+
+# UNMODIFIED FUNCTIONS
+
 def strip_low_expression(pop, threshold=0):
     """Remove genes with low or zero expression to reduce memory usage. Modifies the
     target CellPopulation in place.
@@ -109,77 +245,6 @@ def z_normalize_expression(pop, scale_by_total=True):
     
     return pd.DataFrame(m_out, columns=m.columns, index=m.index)
 
-def normalize_matrix_to_control(matrix, control_matrix, scale_by_total=True, median_umi_count=None):
-    """ Normalize expression distribution relative to a population of control (unperturbed) cells.
-    The normalization proceeds by first normalizing the UMI counts within each cell to the median
-    UMI count within the population. The control population is normalized to the same amount. 
-    The expression within the population is then Z-normalized with respect to the control 
-    distribution: i.e., for each gene the control mean is subtracted, and then these values are
-    divided by the control standard deviation.
-        
-    Args:
-        matrix: gene expression matrix to normalize (output from cellranger)
-        control_matrix: gene expression matrix of control population
-        scale_by_total: Rescale UMI counts within each cell to population median (default: True)
-        median_umi_count: If provided, set the median to normalize to. This is useful for example
-            when normalizing multiple independent lanes/gemgroups.
-    
-    Returns:
-        DataFrame of normalized expression data
-    """
-    # Convert sparse matrices to dense if necessary
-    if isinstance(matrix, pd.DataFrame) and matrix.sparse.density < 1.0:
-        print('     Densifying matrix...')
-        matrix = matrix.sparse.to_dense()
-    if isinstance(control_matrix, pd.DataFrame) and control_matrix.sparse.density < 1.0:
-        print('     Densifying control matrix...')
-        control_matrix = control_matrix.sparse.to_dense()
-
-    # Convert to numpy arrays for processing if needed
-    if isinstance(matrix, pd.DataFrame):
-        matrix = matrix.values
-    if isinstance(control_matrix, pd.DataFrame):
-        control_matrix = control_matrix.values
-
-    # Normalize to median UMI count if specified
-    if scale_by_total:
-        print("     Determining scale factors...")
-        reads_per_bc = matrix.sum(axis=1)
-        
-        if median_umi_count is None:
-            median_reads_per_bc = np.median(reads_per_bc)
-        else:
-            median_reads_per_bc = median_umi_count
-        
-        scaling_factors = median_reads_per_bc / reads_per_bc
-        
-        print("     Normalizing matrix to median")
-        m = matrix.astype(np.float64)
-        # Normalize expression within each cell by median total count
-        m *= scaling_factors[:, np.newaxis]
-        if np.mean(median_reads_per_bc) < 5000:
-            print("Scaling with a small number of reads. Are you sure this is what you want?")
-            
-        control_reads_per_bc = control_matrix.sum(axis=1)
-        
-        print("     Normalizing control matrix to median")
-        control_scaling_factors = median_reads_per_bc / control_reads_per_bc
-        c_m = control_matrix.astype(np.float64)
-        c_m *= control_scaling_factors[:, np.newaxis]
-    else:
-        m = matrix.astype(np.float64)
-        c_m = control_matrix.astype(np.float64)
-
-    control_mean = c_m.mean(axis=0)
-    control_std = c_m.std(axis=0)
-    
-    print("     Scaling matrix to control")
-    # Center and rescale the expression of each gene to average 0 and std 1
-    m_out = (m - control_mean) / control_std
-    
-    print("     Done.")
-    return pd.DataFrame(m_out, columns=np.arange(m.shape[1]), index=np.arange(m.shape[0]))
-
 def normalize_to_control(pop, control_cells, scale_by_total=True, median_umi_count=None, **kwargs):
     """ Normalize expression distribution relative to a population of control (unperturbed) cells.
     The normalization proceeds by first normalizing the UMI counts within each cell to the median
@@ -252,67 +317,6 @@ def normalize_to_gemgroup_control(pop, control_cells, median_umi_count=None, **k
         print(time() - t)
     print('Merging submatrices...')
     return pd.concat(gem_group_matrices.values()).loc[pop.matrix.index]
-
-def normalize_to_gemgroup_control_residuals_adata(adata, control_cells_query, **kwargs):
-    """Normalizes a multi-lane 10x experiment stored in an AnnData object.
-    Cells within each gemgroup are normalized to the control cells within the same gemgroup.
-        
-    Args:
-        adata: AnnData object to normalize
-        control_cells_query: String query to identify control cell population
-            to normalize with respect to
-        median_umi_count: Value to normalize UMI counts to across lanes. If None (the default)
-            then all cells are normalized to the median UMI count of control cells within the
-            whole experiment.
-        **kwargs: Additional arguments passed to groupby on adata.obs, useful for refined slicing.
-
-    Returns:
-        DataFrame of normalized expression data with appropriate indices.
-    
-    Example:
-        normalized_matrix = normalize_to_gemgroup_control_residuals_adata(adata,
-                                                          control_cells_query='guide_identity == "control"')
-        will produce a normalized expression matrix where cells in each gemgroup are Z-normalized 
-        with respect to the expression distribution of cells in that lane bearing the guide_identity
-        "control".
-    """
-
-    # Group cells by 'gem_group'
-    gemgroup_iterator = zip(
-        adata.obs.groupby('gem_group', observed=False),
-        adata[adata.obs.query(control_cells_query).index].obs.groupby('gem_group', observed=False)
-    )
-    
-    gem_group_matrices = dict()
-    for (i, gemgroup_pop), (_, gemgroup_control_pop) in gemgroup_iterator:
-        print('Processing gem group {0}'.format(i))
-        t = time()
-
-        # Select the data for the current gemgroup
-        gemgroup_data = adata[gemgroup_pop.index].X.copy()
-        control_data = adata[gemgroup_control_pop.index].X.copy()
-        
-        gem_group_matrices[i] = normalize_matrix_to_control(
-            gemgroup_data,
-            control_data,
-            scale_by_total=False
-        )
-        
-        # Assign the correct index
-        gem_group_matrices[i].index = gemgroup_pop.index
-        gem_group_matrices[i].columns = adata.var_names
-        
-        print(time() - t)
-    
-    print('Merging submatrices...')
-    
-    # Merge all matrices into a DataFrame
-    normalized_matrix = pd.concat(gem_group_matrices.values())
-    
-    # Ensure the rows match the original AnnData index
-    normalized_matrix = normalized_matrix.loc[adata.obs_names]
-    
-    return normalized_matrix
 
 def normalize_matrix_by_key(pop, key):
     subpop_matrices = dict()

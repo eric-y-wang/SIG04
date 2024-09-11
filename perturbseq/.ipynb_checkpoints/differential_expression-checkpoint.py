@@ -23,6 +23,138 @@ from scipy.signal import medfilt
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 
+# MODIFIED FUNCTIONS
+
+def ad_de(adata, key, control_cells, genes=None, cells=None, normalized=False, n_jobs=1, alpha=0.05, multi_method='fdr_by', **kwargs):
+    """Look for differential gene expression relative to a control population based on Anderson-Darling test.
+    The function will do the test for each subpopulation defined by a category in adata.obs. See documentation
+    for ks_de.
+    
+    Args:
+        adata: AnnData object containing single-cell RNA-seq data
+        key: name of column in adata.obs metadata that defines subpopulations
+        control_cells: a query on adata.obs that defines the control cell population that differences are defined with respect to
+        genes: list of gene names or indices to consider (default: all genes)
+        normalized: use normalized expression matrix for comparison (default: False)
+        n_jobs: number of cores to use in parallel processing (default: 1)
+        alpha: FWER/FDR in multiple hypothesis testing correction
+        multi_method: method of multiple hypothesis testing correction (default: 'fdr_by')
+    
+    Returns:
+        ADs: DataFrame of Anderson-Darling test statistics
+        ps: DataFrame of p-values
+        adj_ps: DataFrame of p-values corrected for multiple hypothesis testing
+    """
+    
+    control_matrix = _get_subpop_matrix(adata, control_cells, genes=genes, normalized=normalized)
+    print(f"{control_matrix.shape[0]} control cells")
+    subpops = _group_by_key(adata, key, cells=cells, genes=genes, normalized=normalized)
+    
+    out = Parallel(n_jobs=n_jobs, verbose=10)(
+        delayed(_anderson_compare_pops)(subpop, control_matrix, name) 
+        for name, subpop in subpops
+    )
+    
+    ADs, ps = zip(*out)
+    ADs = pd.DataFrame(list(ADs)).T
+    ps = pd.DataFrame(list(ps)).T
+    
+    adj_ps = ps.apply(lambda x: _multi_test_correct(x, alpha, multi_method))
+    
+    return ADs, ps, adj_ps
+
+def _anderson_compare_pops(first_pop_matrix, second_pop_matrix, name=None):
+    """Helper function used to execute Anderson-Darling test. See ad_de."""
+    AD_stats = {}
+    p_stats = {}
+    for gene_idx in range(first_pop_matrix.shape[1]):
+        AD, _, p = anderson_ksamp([first_pop_matrix[:, gene_idx].toarray().flatten(),
+                                   second_pop_matrix[:, gene_idx].toarray().flatten()])
+        AD_stats[gene_idx] = AD
+        p_stats[gene_idx] = p
+    return pd.Series(AD_stats, name=name), pd.Series(p_stats, name=name)
+
+def ks_de(adata, key, control_cells, genes=None, cells=None, normalized=False, n_jobs=1, alpha=0.05, multi_method='fdr_by', **kwargs):
+    """Look for differential gene expression relative to a control population based on Kolmogorov-Smirnov test.
+    The function will do the test for each subpopulation defined by a category in adata.obs. See documentation
+    for ad_de.
+    
+    Args:
+        adata: AnnData object containing single-cell RNA-seq data
+        key: name of column in adata.obs metadata that defines subpopulations
+        control_cells: a query on adata.obs that defines the control cell population that differences are defined with respect to
+        genes: list of gene names or indices to consider (default: all genes)
+        normalized: use normalized expression matrix for comparison (default: False)
+        n_jobs: number of cores to use in parallel processing (default: 1)
+        alpha: FWER/FDR in multiple hypothesis testing correction
+        multi_method: method of multiple hypothesis testing correction (default: 'fdr_by')
+    
+    Returns:
+        KSS: DataFrame of Kolmogorov-Smirnov test statistics
+        ps: DataFrame of p-values
+        adj_ps: DataFrame of p-values corrected for multiple hypothesis testing
+    """
+    
+    control_matrix = _get_subpop_matrix(adata, control_cells, genes=genes, normalized=normalized)
+    print(f"{control_matrix.shape[0]} control cells")
+    subpops = _group_by_key(adata, key, cells=cells, genes=genes, normalized=normalized)
+    
+    out = Parallel(n_jobs=n_jobs, verbose=10)(
+        delayed(_ks_compare_pops)(subpop, control_matrix, name) 
+        for name, subpop in subpops
+    )
+    
+    KSS, ps = zip(*out)
+    KSS = pd.DataFrame(list(KSS)).T
+    ps = pd.DataFrame(list(ps)).T
+    
+    adj_ps = ps.apply(lambda x: _multi_test_correct(x, alpha, multi_method))
+    
+    return KSS, ps, adj_ps
+
+def _ks_compare_pops(first_pop_matrix, second_pop_matrix, name=None):
+    """Helper function used to execute Kolmogorov-Smirnov test. See ks_de."""
+    KS_stats = {}
+    p_stats = {}
+    for gene_idx in range(first_pop_matrix.shape[1]):
+        KS, p = ks_2samp(first_pop_matrix[:, gene_idx].toarray().flatten(),
+                         second_pop_matrix[:, gene_idx].toarray().flatten())
+        KS_stats[gene_idx] = KS
+        p_stats[gene_idx] = p
+    return pd.Series(KS_stats, name=name), pd.Series(p_stats, name=name)
+
+def _get_subpop_matrix(adata, cells_query, genes=None, normalized=False):
+    """Helper function to retrieve a subset of the AnnData matrix based on cell and gene queries."""
+    subpop = adata[adata.obs.query(cells_query).index]
+    if genes is not None:
+        subpop = subpop[:, genes]
+    if normalized:
+        return subpop.X
+    else:
+        return subpop.raw.X if subpop.raw is not None else subpop.X
+
+def _group_by_key(adata, key, cells=None, genes=None, normalized=False):
+    """Helper function to group an AnnData object by a specific key."""
+    grouped_data = {}
+    if cells:
+        adata = adata[adata.obs.query(cells).index]
+    for group, indices in adata.obs.groupby(key).groups.items():
+        subpop = adata[indices, :]
+        if genes:
+            subpop = subpop[:, genes]
+        if normalized:
+            grouped_data[group] = subpop.X
+        else:
+            grouped_data[group] = subpop.raw.X if subpop.raw is not None else subpop.X
+    return grouped_data.items()
+
+def _multi_test_correct(p, alpha, multi_method):
+    """Helper function for multiple hypothesis testing correction."""
+    _, corr_p_values, _, _ = multipletests(p, alpha=alpha, method=multi_method)
+    return corr_p_values
+
+# UNMODIFIED FUNCTIONS
+
 def find_noisy_genes(pop, noisy_threshold=0.05, mean_threshold=0.05, exclude=[], resolution=1000):
     """Finds genes that exceed the baseline relationship observed between mean and coefficient
     of variation (i.e. genes that are overdispersed). Briefly, a curve fitting procedure is
@@ -75,100 +207,7 @@ def find_noisy_genes(pop, noisy_threshold=0.05, mean_threshold=0.05, exclude=[],
     print('{0} variable genes found ({1} excluded)'.format(len(noisy_genes), len(np.intersect1d(noisy_genes_raw, exclude))))
     
     return noisy_genes
-
-def ks_de(pop, key, control_cells, genes=None, cells=None, normalized=False, n_jobs=1, alpha=0.05, multi_method='fdr_by', **kwargs):
-    """Look for differential gene expression relative to a control population based on Kolmogorov-Smirnov test.
-    The function will do the test for each subpopulation defined by a category in pop.cells.
-    
-    Args:
-        pop: CellPopulation instance to look in
-        key: name of column in pop.cells metadata that defines subpopulations
-        control_cells: a query of pop that defines the control cell population that differences are defined with respect to
-        genes: query of which genes to consider (e.g. 'mean > 0.1')
-        normalized: use normalized expression matrix for comparison (default: False)
-        n_jobs: number of cores to use in parallel processing (default: 1)
-        alpha: FWER/FDR in multiple hypothesis testing correction
-        multi_method: method of multiple hypothesis testing correction (default: 'fdr_by')
-    
-    Returns:
-        ks_matrix: matrix of test statistics for each gene in each subpopulation against the control population
-        p_matrix: p-values
-        adj_p_matrix: p-values corrected for multiple hypothesis testing
-
-    Example: 
-        >>>ks, p, adj_p = ks_de(pop,
-                                key='guide_target',
-                                control_cells='guide_target == "control"',
-                                genes='mean > 0.25',
-                                normalized=True,
-                                n_jobs=16)
-    """
-
-    control_matrix = pop.where(cells=control_cells, genes=genes, normalized=normalized, **kwargs)
-    print("{0} control cells".format(control_matrix.shape[0]))
-    subpops = pop.groupby(key, cells=cells, genes=genes, normalized=normalized, **kwargs)
-    
-    out = Parallel(n_jobs=n_jobs, verbose=10)(delayed(_ks_compare_pops)(subpop, control_matrix, name) for name, subpop in subpops)
-    
-    Ks, ps = zip(*out)
-    Ks = pd.DataFrame(list(Ks)).T
-    ps = pd.DataFrame(list(ps)).T
-    
-    adj_ps = ps.copy()
-    adj_ps = adj_ps.apply(lambda x: _multi_test_correct(x, alpha, multi_method))
-    
-    return Ks, ps, adj_ps
-
-def ad_de(pop, key, control_cells, genes=None, cells=None, normalized=False, n_jobs=1, alpha=0.05, multi_method='fdr_by', **kwargs):
-    """Look for differential gene expression relative to a control population based on Anderson-Darling test.
-    The function will do the test for each subpopulation defined by a category in pop.cells. See documentation
-    for ks_de.
-    """
-    control_matrix = pop.where(cells=control_cells, genes=genes, normalized=normalized, **kwargs)
-    print("{0} control cells".format(control_matrix.shape[0]))
-    subpops = pop.groupby(key, cells=cells, genes=genes, normalized=normalized, **kwargs)
-    
-    out = Parallel(n_jobs=n_jobs, verbose=10)(delayed(_anderson_compare_pops)(subpop, control_matrix, name) for name, subpop in subpops)
-    
-    ADs, ps = zip(*out)
-    ADs = pd.DataFrame(list(ADs)).T
-    ps = pd.DataFrame(list(ps)).T
-    
-    adj_ps = ps.copy()
-    adj_ps = adj_ps.apply(lambda x: _multi_test_correct(x, alpha, multi_method))
-    
-    return ADs, ps, adj_ps
-
-def _anderson_compare_pops(first_pop_matrix, second_pop_matrix, name=None):
-    """Helper function used to execute Anderson-Darling test. See anderson_de.
-    """
-    AD_stats = dict()
-    p_stats = dict()
-    for gene_id in first_pop_matrix.columns:
-        AD, _, p = anderson_ksamp([first_pop_matrix[gene_id],
-                               second_pop_matrix[gene_id]])
-        AD_stats[gene_id] = AD
-        p_stats[gene_id] = p
-    return pd.Series(AD_stats, name=name), pd.Series(p_stats, name=name)
-
-def _multi_test_correct(p, alpha, multi_method):
-    """Helper function for multiple hypothesis testing correction
-    """
-    _, corr_p_values, _, _ = multipletests(p, alpha=alpha, method=multi_method)
-    return corr_p_values
-    
-def _ks_compare_pops(first_pop_matrix, second_pop_matrix, name=None):
-    """Helper function used to execute Kolmogorov-Smirnov test. See ks_de.
-    """
-    KS_stats = dict()
-    p_stats = dict()
-    for gene_id in first_pop_matrix.columns:
-        KS, p = ks_2samp(first_pop_matrix[gene_id], \
-                                     second_pop_matrix[gene_id])
-        KS_stats[gene_id] = KS
-        p_stats[gene_id] = p
-    return pd.Series(KS_stats, name=name), pd.Series(p_stats, name=name)
-       
+     
 def _prep_X_y(pop, key, cells=None, genes=None, normalized=True, feature_table=None, ignore=None, verbose=False, **kwargs):
     """Helper function that formats expression data and class labels to feed into classifier
     """
