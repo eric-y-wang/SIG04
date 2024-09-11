@@ -43,12 +43,12 @@ names(dataRaw2)
 subset_joint <- function(x){
   # identify joint cells between BC and GEX dataset
   jointCells <- intersect(colnames(x$`Gene Expression`),
-                          colnames(x$`Antibody Capture`))
+                          colnames(x$`CRISPR Guide Capture`))
   
   # subset each dataset to include joint cells
   data <- vector(mode = "list")
   data[["GEX"]] <- x$`Gene Expression`[,jointCells]
-  data[["oBC"]] <- x$`Antibody Capture`[,jointCells]
+  data[["oBC"]] <- x$`CRISPR Guide Capture`[,jointCells]
   
   return(data)
 }
@@ -60,7 +60,7 @@ dataRaw2 <- subset_joint(dataRaw2)
 
 ### Filter Low Genes
 
-Remove genes that are expressed by less than 1 in 5000 cells (assuming 30% dropout
+Remove genes that are expressed by less than 1 in 1000 cells (assuming 30% dropout
 rate). Set this level based on the smallest size cluster that you want to be
 detectable in the final dataset.
 
@@ -68,7 +68,7 @@ detectable in the final dataset.
 dataMergeGEX <- cbind(dataRaw1$GEX,dataRaw2$GEX)
 
 # create vector of genes to keep
-keepGenes <- Matrix::rowSums(dataMergeGEX > 0) >= ncol(dataMergeGEX)*0.0002*0.3
+keepGenes <- Matrix::rowSums(dataMergeGEX > 0) >= ncol(dataMergeGEX)*(1/1000)*0.3
 
 # remove genes from gex matrices
 dataRaw1$GEX <- dataRaw1$GEX[keepGenes,]
@@ -77,13 +77,7 @@ dataRaw2$GEX <- dataRaw2$GEX[keepGenes,]
 rm(dataMergeGEX)
 ```
 
-### Filter Low oBC
-
-```{r}
-sum(colSums(dataRaw1$oBC > 0) > 0)/ncol(dataRaw1$oBC)
-sum(colSums(dataRaw2$oBC > 0) > 0)/ncol(dataRaw2$oBC)
-```
-
+### Create Seurat
 
 ```{r}
 create_seurat <- function(x){
@@ -130,9 +124,6 @@ metadata <- bind_rows(dataSeurat[[1]]@meta.data,dataSeurat[[2]]@meta.data) %>%
 ```{r, fig.width=15, fig.height=7}
 # enter QC values
 qcValues <- c(nFeature_RNA = 1000, nCount_RNA = 2000, percent.mt = 5)
-
-# quantify how many cells there are
-paste0("There are ", ncol(data), " cells")
 
 # Visualize the number UMIs/transcripts per cell
 p1 <- metadata %>%
@@ -190,13 +181,20 @@ p6 <- metadata %>%
 plot_grid(p1,p2,p3,p4,p5,p6, ncol = 3)
 ```
 
-```{r}
+```{r, fig.height=5, fig.width=6}
 metadata %>%
-  	ggplot(aes(color=orig.ident, x=nCount_oBC, fill= orig.ident)) + 
+  	ggplot(aes(color=orig.ident, x=log10(nCount_oBC+1), fill= orig.ident)) + 
   	geom_density(alpha = 0.2) + 
-  	scale_x_log10() + 
   	ylab("Cell density")
 ```
+```{r, fig.height=5, fig.width=12}
+metadata %>%
+  	ggplot(aes(x=log10(nCount_oBC+1), y=log10(nCount_RNA+1))) + 
+    facet_wrap(~orig.ident) +
+    geom_pointdensity() +
+    scale_color_viridis_c()
+```
+
 It's weird that lane 2 which consists of sorted cells has such a skewed distribution compared to lane 1. Theoretically you would think that sorting would improve barcode detection. 
 
 ### Subset data based on QC metrics
@@ -205,123 +203,147 @@ It's weird that lane 2 which consists of sorted cells has such a skewed distribu
 dataQC <- lapply(dataSeurat, function(x) subset(x, subset = (nFeature_RNA >= qcValues[1]) & (nCount_RNA >=qcValues[2]) & (percent.mt < qcValues[3])))
 ```
 
-Remove cells that have 0 oBC counts
+## [Add CR CRISPR Calls]{.underline}
+
+Here, we merge the oBC calls with the dataset and 
 
 ```{r}
-paste0(ncol(subset(dataQC[[2]], subset = nCount_oBC > 0))/ncol(dataQC[[2]])," of cells have oBC > 0")
+# import crispr calls for each lane
+# KEEP ORDER OF LANES THE SAME AS SEURAT OBJECT
+crisprCalls <- vector(mode = "list")
+crisprCalls[["lane1"]] <- read_csv("C:/Users/Eric/My Drive/Lab/datasets/EYW/SIG04_10x_240816/cellranger_outs/SIG04_lane1_GEX_oBC/crispr_analysis/protospacer_calls_per_cell.csv")
+crisprCalls[["lane2"]] <- read.csv("C:/Users/Eric/My Drive/Lab/datasets/EYW/SIG04_10x_240816/cellranger_outs/SIG04_lane2_GEX_oBC/crispr_analysis/protospacer_calls_per_cell.csv")
 
-dataQC[[2]] <- subset(dataQC[[2]], subset = nCount_oBC > 0)
+# replace feature_call with names
+featureTib <- read_csv("C:/Users/Eric/My Drive/Lab/datasets/EYW/SIG04_10x_240816/cellranger_inputs/feature_ref_SIG04.csv") %>%
+  select(id,name)
+for(i in 1:length(crisprCalls)){
+  df <- crisprCalls[[i]] %>%
+    separate_rows(feature_call, sep = "\\|") %>%
+    left_join(featureTib, by = c("feature_call" = "id")) %>%
+    group_by(group = cell_barcode) %>%
+    summarize(name = str_c(name, collapse = "|")) %>%
+    ungroup()
+  
+  crisprCalls[[i]]$feature_call <- df$name
+}
+
+for(i in 1:length(dataQC)){
+  # get name of sample
+  sample <- names(dataQC)[i]
+  
+  # extract metadata
+  metadata <- dataQC[[sample]]@meta.data %>%
+    as_tibble(rownames = "cell_barcode")
+  
+  # match metadata with crispr calls
+  metadata <- left_join(metadata, crisprCalls[[sample]]) %>%
+    mutate(oBC_classification = case_when(num_features == 1 ~ "singlet",
+                                             num_features >= 2 ~ "multiplet",
+                                             is.na(num_features) ~ "none"))
+  metadataDF <- as.data.frame(metadata[,-1])
+  rownames(metadataDF) <- metadata$cell_barcode
+  
+  # replace seurat metadata
+  dataQC[[sample]]@meta.data <- metadataDF
+}
 ```
-
-
-## [HTODemux oBC]{.underline}
-
-Use oBC pseudo because HTODemux will throw an error if a feature has no counts. oBC pseudo has an additional count added to all cells for all features
 
 ```{r}
-dataQC <- lapply(dataQC, function(x) NormalizeData(x, assay = "oBC", normalization.method = "CLR"))
-dataQC <- lapply(dataQC, function(x) HTODemux(x, assay = "oBC"))
-
-test <- dataQC[[2]]
-test <- HTODemux(test, assay = "oBC", nsamples = 1000)
-
+table(dataQC[[1]]$oBC_classification)
+table(dataQC[[2]]$oBC_classification)
 ```
 
-```{r, fig.width=6, fig.height=5}
+```{r}
+table(dataQC[[1]]$oBC_classification)/ncol(dataQC[[1]])
+table(dataQC[[2]]$oBC_classification)/ncol(dataQC[[2]])
+```
+
+```{r}
 # Calculate a UMAP embedding of the HTO data
 DefaultAssay(dataQC$lane1) <- "oBC"
 DefaultAssay(dataQC$lane2) <- "oBC"
 
-dataQC <- lapply(dataQC, function(x) ScaleData(x, features = rownames(x),
-                                                       verbose = FALSE)) %>%
-  lapply(function(x) RunPCA(x, features = rownames(x), approx = FALSE, verbose = F)) %>%
+dataQC <- lapply(dataQC, function(x) NormalizeData(x, assay="oBC",normalization.method = "CLR", verbose=F)) %>%
+  lapply(function(x) ScaleData(x, features = rownames(x), verbose = FALSE)) %>%
+  lapply(function(x) RunPCA(x, features = rownames(x),approx = F, npcs = nrow(x), verbose = F)) %>%
   lapply(function(x) RunUMAP(x, dims = 1:nrow(x), verbose = F))
 ```
 
-```{r, fig.width=12, fig.height=8}
+```{r, fig.height=10, fig.width=10}
 plotHTO <- function(x){
-  # create heatmap of HTO expression
-  p1 <- HTOHeatmap(x, assay = "HTO")
-  Idents(x) <- "HTO_classification.global"
+  Idents(x) <- "oBC_classification"
   # compare UMI number for singlets, doublets, negatives
-  p2 <- VlnPlot(x, features = "nCount_RNA", pt.size = 0.1, log = TRUE, alpha = 0.5)
+  p2 <- VlnPlot(x, features = "nCount_oBC", pt.size = 0.1, log = TRUE, alpha = 0.5)
   # plot HTO data on tSNE
   p3 <- DimPlot(x)
   
-  (p3+p2)/p1
+  p2+p3
 }
 
-plotHTO(dataSeurat$lane1)
-plotHTO(dataSeurat$lane2)
+plotHTO(dataQC$lane1)
+plotHTO(dataQC$lane2)
 ```
-
-```{r, fig.width=12, fig.height=16}
-# vsiualize ridge plots for HTO
-Idents(dataSeurat$lane1) <- "HTO_maxID"
-Idents(dataSeurat$lane2) <- "HTO_maxID"
-
-lapply(dataSeurat, function(x) RidgePlot(x, assay = "HTO", features = rownames(x[["HTO"]]), ncol = 3))
-```
-
-
-
 
 ## [Merge 10x lanes into single dataset]{.underline}
 
 ```{r}
-data <- merge(dataSeurat[[1]],dataSeurat[[2]],
+data <- merge(dataQC[[1]],dataQC[[2]],
               add.cell.ids = c("lane1","lane2"), project = "SIG04") %>%
   JoinLayers()
 
 # rename orig.ident based on
 data$orig.ident <- paste(data$orig.ident, gsub("_.*","", colnames(data)), sep = "-")
 
-rm(dataSeurat)
+rm(dataQC)
 ```
-
-
-
 
 ## [Remove HTO negatives]{.underline}
 
 ```{r}
-Idents(dataSub) <- "HTO_classification.global"
-dataSub <- subset(dataSub, idents = "Negative", invert = T)
+table(data$oBC_classification)
+
+table(data$oBC_classification)/ncol(data)*100
+```
+
+
+```{r}
+Idents(data) <- "oBC_classification"
+dataSub <- subset(data, idents = c("singlet","none"))
 ```
 
 ```{r}
 dataSub@meta.data %>%
-  group_by(hash.ID) %>%
+  group_by(oBC_classification) %>%
   summarize(num_cells = n()) %>%
   mutate(percent = num_cells/sum(num_cells)*100)
 ```
-
 
 ## [Score for sources of variation]{.underline}
 
 ### Cell cycle variation
 ```{r}
-DefaultAssay(dataSubQC) <- "RNA"
-dataSubQC <- NormalizeData(dataSubQC)
+DefaultAssay(dataSub) <- "RNA"
+dataSub <- NormalizeData(dataSub)
 # Identify the most variable genes
-dataSubQC <- FindVariableFeatures(dataSubQC, 
+dataSub <- FindVariableFeatures(dataSub, 
                      selection.method = "vst",
                      nfeatures = 2000, 
                      verbose = FALSE)
 # Scale the counts
-dataSubQC <- ScaleData(dataSubQC)
+dataSub <- ScaleData(dataSub)
 
 cellCycleGenes <- read_csv("C:/Users/Eric/My Drive/Lab/datasets/gene_sets/cell_cycle_genes_seurat_mouse.csv")
 # cellCycleGenes <- read_csv("/Users/wange7/Library/CloudStorage/GoogleDrive-ericwang314@gmail.com/My Drive/Lab/datasets/gene_sets/cell_cycle_genes_seurat_mouse.csv")
 
-dataSubQC <- CellCycleScoring(dataSubQC, s.features = cellCycleGenes$s_genes,
+dataSub <- CellCycleScoring(dataSub, s.features = cellCycleGenes$s_genes,
                             g2m.features = cellCycleGenes$g2m_genes)
 ```
 
 ```{r, fig.width=8, fig.height=4}
 # Plot the PCA colored by cell cycle phase
-dataSubQC <- RunPCA(dataSubQC, verbose = FALSE)
-DimPlot(dataSubQC,
+dataSub <- RunPCA(dataSub, verbose = FALSE)
+DimPlot(dataSub,
         reduction = "pca",
         group.by= "Phase",
         split.by = "Phase")
@@ -331,14 +353,14 @@ DimPlot(dataSubQC,
 
 ```{r, fig.width = 12, fig.height=4}
 # Check quartile values
-mitoQuart <- summary(dataSubQC@meta.data$mitoRatio)
+mitoQuart <- summary(dataSub@meta.data$mitoRatio)
 
 # Turn mitoRatio into categorical factor vector based on quartile values
-dataSubQC@meta.data$mitoFr <- cut(dataSubQC@meta.data$mitoRatio, 
+dataSub@meta.data$mitoFr <- cut(dataSub@meta.data$mitoRatio, 
                    breaks=c(-Inf, mitoQuart[2], mitoQuart[3], mitoQuart[5], Inf), 
                    labels=c("Low","Medium","Medium high", "High"))
 
-DimPlot(dataSubQC,
+DimPlot(dataSub,
         reduction = "pca",
         group.by= "mitoFr",
         split.by = "mitoFr")
@@ -351,92 +373,68 @@ DimPlot(dataSubQC,
 ```{r}
 options(future.globals.maxSize= 10000*1024^2)
 # perform SCT normalization and find variable features
-dataSubQC <- SCTransform(dataSubQC, vst.flavor = "v2",
-                       vars.to.regress = c("orig.ident","mitoRatio","Phase"),
+dataSub <- SCTransform(dataSub, vst.flavor = "v2",
+                       vars.to.regress = c("orig.ident"),
                        variable.features.n = 3100)
 
 # remove TCR genes from variable features
-featureVar <- VariableFeatures(dataSubQC, assay = "SCT")
+featureVar <- VariableFeatures(dataSub, assay = "SCT")
 TCRgenes <- grep("^Tra[vj]|^Trb[vdj]",featureVar)
 BCRgenes <- grep("^Igk[vc]|^Igl[vc]|^Ighv",featureVar)
+viralGenes <- grep("^p139",featureVar)
 featureVar[TCRgenes]
 featureVar[BCRgenes]
+featureVar[viralGenes]
 
-VariableFeatures(dataSubQC, assay = "SCT") <- featureVar[-c(TCRgenes,BCRgenes)]
+VariableFeatures(dataSub, assay = "SCT") <- featureVar[-c(TCRgenes,BCRgenes,viralGenes)]
 
 # scale SCT variable features in RNA assay
-DefaultAssay(dataSubQC) <- "RNA"
-dataSubQC <- ScaleData(dataSubQC, features = featureVar[-c(TCRgenes,BCRgenes)])
-DefaultAssay(dataSubQC) <- "SCT"
+DefaultAssay(dataSub) <- "RNA"
+dataSub <- ScaleData(dataSub, features = featureVar[-c(TCRgenes,BCRgenes,viralGenes)])
+DefaultAssay(dataSub) <- "SCT"
 ```
 
-### CITE
+### Normalize oBC
 
 ```{r}
-dataSubQC <- NormalizeData(dataSubQC, assay = "CITE", normalization.method = "CLR")
-```
-
-```{r, fig.height=6, fig.width=10}
-RidgePlot(dataSubQC, assay = "CITE", features = c("CD62L","CD44"), group.by = "HTO_maxID")
+dataSub <- NormalizeData(dataSub, assay = "oBC", normalization.method = "CLR")
 ```
 
 ## [Dim Reduction]{.underline}
 
 ```{r}
 # run PCA using TCR/BCR excluded Variable Features
-dataSubQC <- RunPCA(dataSubQC, npcs = 60, verbose = FALSE)
-ElbowPlot(dataSubQC, ndims = 60) +
-  ggtitle("dataSubQC Elbow") +
+dataSub <- RunPCA(dataSub, npcs = 60, verbose = FALSE)
+ElbowPlot(dataSub, ndims = 60) +
+  ggtitle("dataSub Elbow") +
   scale_x_continuous(breaks = seq(0,60,3))
 ```
 
 ```{r}
-dimValues <- 54
+dimValues <- 50
 # run umap based on dimensionality from elbow plot
-dataSubQC <- RunUMAP(dataSubQC, dims = 1:dimValues, verbose = F) %>%
+dataSub <- RunUMAP(dataSub, dims = 1:dimValues, verbose = F) %>%
   FindNeighbors(dims = 1:dimValues, verbose = FALSE) %>%
-  FindClusters(resolution = seq(0,1.2,0.1),
+  FindClusters(resolution = seq(0,1,0.1), verbose = F,
                algorithm = 1)
 ```
 
 ```{r, fig.height=10, fig.width=6}
-clustree(dataSubQC, prefix = "SCT_snn_res.") +
-  ggtitle("dataSubQC Clustree")
+clustree(dataSub, prefix = "SCT_snn_res.") +
+  ggtitle("dataSub Clustree")
 ```
 
-```{r, fig.width=12, fig.height=10}
-dataSubQC$seurat_clusters <- dataSubQC$SCT_snn_res.0.8
-Idents(dataSubQC) <- dataSubQC$seurat_clusters
-p1 <- DimPlot(dataSubQC) + theme(aspect.ratio = 1)
-p2 <- DimPlot(dataSubQC, group.by = "hash.ID") + theme(aspect.ratio = 1)
-p3 <- DimPlot(dataSubQC, group.by = "crispr_classification") + theme(aspect.ratio = 1)
-(p1+p2)/(p3)
-```
-
-```{r, fig.height=25, fig.width=10}
-# perform DEG analysis on SCT data
-dataSubQC <- PrepSCTFindMarkers(dataSubQC)
-clusMarkers <- FindAllMarkers(dataSubQC, only.pos = T, assay = "SCT")
-clusMarkers <- as_tibble(clusMarkers)
-
-sigMarkers <- clusMarkers %>%
-  dplyr::filter(avg_log2FC > 1 & p_val_adj < 0.1) %>%
-  arrange(p_val_adj)
-
-top10 <- sigMarkers %>%
-    group_by(cluster) %>%
-    slice_head(n = 10) %>%
-    ungroup()
-
-top10
-```
-
-```{r}
-write_csv(sigMarkers,"analysis_outs/cluster_markers_full.csv")
+```{r, fig.width=8, fig.height=15}
+dataSub$seurat_clusters <- dataSub$SCT_snn_res.1
+Idents(dataSub) <- dataSub$seurat_clusters
+p1 <- DimPlot(dataSub) + theme(aspect.ratio = 1)
+p2 <- DimPlot(dataSub, split.by = "orig.ident") + theme(aspect.ratio = 1)
+p3 <- DimPlot(dataSub, split.by = "oBC_classification") + theme(aspect.ratio = 1)
+p1/p3/p2
 ```
 
 ## [Save RDS]{.underline}
 
 ```{r}
-saveRDS(dataSubQC, "C:/Users/Eric/My Drive/Lab/datasets/EYW/CTR03_10x_240801/seurat_outs/CTR03_full.rds")
+saveRDS(dataSub, "C:/Users/Eric/My Drive/Lab/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_singlet_negative.rds")
 ```
