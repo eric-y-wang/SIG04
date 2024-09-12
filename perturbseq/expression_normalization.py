@@ -19,6 +19,7 @@ from six.moves import zip as izip
 from time import time
 import gc
 from tqdm import tqdm_notebook
+import scipy as sp
 
 # MODIFIED FUNCTIONS
 
@@ -41,10 +42,10 @@ def normalize_matrix_to_control(matrix, control_matrix, scale_by_total=True, med
         DataFrame of normalized expression data
     """
     # Convert sparse matrices to dense if necessary
-    if isinstance(matrix, pd.DataFrame) and matrix.sparse.density < 1.0:
+    if sp.sparse.issparse(matrix):
         print('     Densifying matrix...')
         matrix = matrix.todense()
-    if isinstance(control_matrix, pd.DataFrame) and control_matrix.sparse.density < 1.0:
+    if sp.sparse.issparse(control_matrix):
         print('     Densifying control matrix...')
         control_matrix = control_matrix.todense()
 
