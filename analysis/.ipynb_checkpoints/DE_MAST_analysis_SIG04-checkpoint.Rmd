@@ -1,0 +1,226 @@
+---
+title: "DE MAST analysis"
+author: "Eric Y. Wang"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  github_document:
+    toc: true
+    html_preview: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+library(MAST)
+library(future)
+library(furrr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("functions/plotting_fxns.R")
+source("functions/scRNA_seq_analysis_functions.R")
+theme_set(theme_Publication())
+```
+
+## [Import data]{.underline}
+
+```{r}
+data <- readRDS("C:/Users/Eric/Documents/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_postQC_seurat_all.rds")
+# subset to singlets only
+data <- subset(data, subset = oBC_classification == "singlet")
+```
+
+
+## [Overview]{.underline}
+
+```{r}
+data@meta.data %>%
+  group_by(oBC_feature_call) %>%
+  summarise(n = n()) 
+
+data@meta.data %>%
+  filter(gem_group == "lane1") %>%
+  group_by(oBC_feature_call) %>%
+  summarise(n = n()) 
+
+data@meta.data %>%
+  filter(gem_group == "lane2") %>%
+  group_by(oBC_feature_call) %>%
+  summarise(n = n()) 
+```
+
+
+```{r}
+p1 <- data@meta.data %>%
+  group_by(oBC_feature_call) %>%
+  summarise(n = n()) %>%
+    ggplot(aes(x="full",y=n)) +
+      geom_violin() +
+      geom_boxplot(width=0.1) +
+      xlab("") +
+      ylab("cell #")
+
+p2 <- data@meta.data %>%
+  group_by(gem_group, oBC_feature_call) %>%
+  summarise(n = n()) %>%
+    ggplot(aes(x="",y=n, fill = gem_group)) +
+      geom_violin() +
+      geom_boxplot(width=0.1, position = position_dodge(0.9)) +
+      scale_fill_brewer(palette="Dark2")+
+      xlab("") +
+      ylab("cell #")
+
+p1+p2
+```
+
+
+## DEG 
+
+I want to regress out the effects of more or less virus. Let's see if I can use the p139 mapped counts from the GEX data or if I should use the oBC counts
+
+```{r}
+# create metadata columns of scaled viral counts for use as covariate
+data$p139_counts = FetchData(data, vars = "p139-T7oBC5p-MS2", layer = "scale.data")
+```
+
+```{r, fig.height=5, fig.width=10}
+library(ggpointdensity)
+
+data@meta.data %>%
+  ggplot(aes(x=p139_counts, y=oBC_log1p_total_counts)) +
+    geom_pointdensity() +
+    scale_color_viridis_c() +
+    facet_wrap(~gem_group) +
+    theme(aspect.ratio = 1)
+```
+
+I feel like the p139 transcript counts are a bit too sparse to be accurate. Lets use the oBC counts
+
+### DEG for full dataset
+
+Perform MAST DEG analysis accounting for gem_group and viral counts.
+```{r}
+# helper function for calculating DEGs
+deg_MAST <- function(data,x,y){
+  DefaultAssay(data) <- "RNA"
+  Idents(data) <- "oBC_feature_call"
+  # perform DEG analysis using seurat wrapper
+  test <- FindMarkers(data,
+              slot = "data", #MAST uses log normalized counts as input
+              min.pct = 0.05,
+              logfc.threshold=0.1,
+              ident.1 = x, ident.2 = y,
+              test.use = "MAST",
+              latent.vars = c("gem_group","oBC_log1p_total_counts"))
+  
+  # make tibble tidy
+  test <- test %>%
+    as_tibble(rownames="genes") %>%
+    mutate(comp_1 = x,
+           comp_2 = y)
+  
+  return(test)
+}
+
+# get list of ligands (comp_1)
+ligands <- data$oBC_feature_call %>% unique()
+ligands <- ligands[grep("p129",ligands, invert = T)]
+```
+
+```{r}
+# set options for parallel analysis
+plan(multisession, workers=parallelly::availableCores())
+```
+
+
+```{r}
+options(future.globals.maxSize= 10000*1024^2)
+# degFull <- tibble()
+# for(ligand in ligands ){
+#   temp <- deg_MAST(data,ligand,"p129")
+#   degFull <- bind_rows(degFull,temp)
+# }
+
+degFull <- future_map_dfr(c("IL4","IL4-pool","IL6","IL6-pool","IFNG","IFNG-pool","IL12","IL12-pool","IFNA","IFNA-pool"), ~ deg_MAST(data, .x, "p129"), seed=T)
+```
+
+```{r}
+write_csv(degFull, "DEG_MAST_full.csv")
+```
+
+```{r}
+degFullSig <- degFull %>%
+  filter(p_val_adj < 0.1) %>%
+  group_by(comp_1) %>%
+  head(n=200)
+```
+
+```{r}
+dataSubPool <- subset(data, subset = oBC_feature_call %in% c("IL4","IL4-pool","IL6","IL6-pool","IFNG","IFNG-pool","IL12","IL12-pool","IFNA","IFNA-pool"))
+dataSubPool <- ScaleData(dataSubPool, features = rownames(dataSubPool))
+
+
+```
+
+```{r, fig.height=20, fig.width=10}
+Idents(dataSubPool) <- "oBC_feature_call"
+DoHeatmap(dataSubPool, features = degFullSig$genes %>% unique())
+```
+```{r}
+mat <- GetAssayData(dataSubPool,assay = "RNA", layer = "scale.data")
+rownames(mat) <- rownames(dataSubPool@assays$RNA@layers$scale.data)
+mat <- mat[rownames(mat)[rownames(mat) %in% unique(degFullSig)],]
+```
+
+```{r}
+library(ComplexHeatmap)
+
+pheatmap(mat = mat)
+```
+
+
+### DEG for each lane2 only
+
+Perform MAST DEG analysis accounting for gem_group and viral counts.
+```{r}
+dataLane2 <- subset(data, subset = gem_group == "lane2")
+
+degLane2 <- tibble()
+for(ligand in ligands){
+  temp <- deg_MAST(dataSub,ligand,"p129")
+  degLane2 <- bind_rows(degLane2,temp)
+}
+```
+
+```{r}
+write_csv(degFull, "DEG_MAST_lane2_sorted.csv")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
