@@ -209,6 +209,16 @@ degSig <- degFulloBCcov %>%
 data <- readRDS("C:/Users/Eric/Documents/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_postqc_seurat.rds")
 ```
 
+```{r}
+dataSub <- subset(data, subset = oBC_feature_call %in% c("CXCL9","CXCL10","CXCL11","IFNA"))
+dataSub <- ScaleData(dataSub, features = rownames(dataSub))
+```
+
+```{r, fig.height=8, fig.width=6}
+genes <-  filter(degSig, comp_1 %in% c("CXCL9","CXCL10","CXCL11"))$genes %>% unique()
+
+DoHeatmap(dataSub, features = genes, group.by = "oBC_feature_call")
+```
 
 
 
