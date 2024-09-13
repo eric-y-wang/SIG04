@@ -32,6 +32,39 @@ degFulloBCcov <- read_csv("analysis_outs/DEG_MAST_full.csv")
 degFullp139cov <- read_csv("analysis_outs/DEG_MAST_p139covariate_full.csv")
 ```
 
+```{r}
+# import seurat object and subset to singlets
+data <- readRDS("C:/Users/Eric/Documents/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_postqc_seurat.rds")
+data <- subset(data, subset = oBC_classification == "singlet")
+```
+
+```{r}
+pertNum <- data@meta.data %>%
+  group_by(oBC_feature_call) %>%
+  summarise(n = n())
+pertNum
+```
+
+```{r, fig.height=13, fig.width=5}
+pertNum %>%
+  ggplot(aes(x=oBC_feature_call,y=n,fill=oBC_feature_call)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=0.5, hjust=-0.25) +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_flip() +
+    xlab("ligand") +
+    ylab("# cells") +
+    ggtitle("Pert Quant in Full Dataset") +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+## [Perturbation # Quantification]{.underline}
+
+
+
 ## [DEG Quantification]{.underline}
 
 -   quantify number of degs per ligand
@@ -205,21 +238,25 @@ degSig <- degFulloBCcov %>%
   filter(p_val_adj < 0.1)
 ```
 
-```{r}
-data <- readRDS("C:/Users/Eric/Documents/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_postqc_seurat.rds")
-```
-
-```{r}
-dataSub <- subset(data, subset = oBC_feature_call %in% c("CXCL9","CXCL10","CXCL11","IFNA"))
+```{r, fig.height=8, fig.width=8}
+# subset data
+dataSub <- subset(data, subset = oBC_feature_call %in% c("CXCL9","CXCL10","CXCL11","IFNA","p129"))
 dataSub <- ScaleData(dataSub, features = rownames(dataSub))
-```
 
-```{r, fig.height=8, fig.width=6}
+# make heatmap with significant genes
 genes <-  filter(degSig, comp_1 %in% c("CXCL9","CXCL10","CXCL11"))$genes %>% unique()
-
 DoHeatmap(dataSub, features = genes, group.by = "oBC_feature_call")
 ```
 
+```{r, fig.height=10, fig.width=10}
+# subset data
+dataSub <- subset(data, subset = oBC_feature_call %in% c("GDF2","GDF11","p129"))
+dataSub <- ScaleData(dataSub, features = rownames(dataSub))
+
+# make heatmap with significant genes
+genes <-  filter(degSig, comp_1 %in% c("GDF2","GDF11","p129"))$genes %>% unique()
+DoHeatmap(dataSub, features = genes, group.by = "oBC_feature_call")
+```
 
 
 
