@@ -1,0 +1,168 @@
+---
+title: "SIG04 DEG visualizations"
+author: "Eric Y. Wang"
+date: "`r Sys.Date()`"
+output:
+  github_document:
+    toc: true
+    html_preview: false
+  html_notebook:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(ggrepel)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("functions/plotting_fxns.R")
+source("functions/scRNA_seq_analysis_functions.R")
+theme_set(theme_Publication())
+```
+
+## [Import data]{.underline}
+
+```{r}
+# import seurat object and subset to singlets
+data <- readRDS("C:/Users/Eric/Documents/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_postqc_seurat.rds")
+data <- subset(data, subset = oBC_classification == "singlet")
+```
+
+```{r}
+meta <- read_csv("processing_outs/plate_meta_SIG04.csv")
+```
+
+## [Barcode Expression Heatmap]{.underline}
+
+```{r}
+metadata <- data@meta.data %>%
+  as_tibble(rownames = "cell_bc")
+
+# extract CLR normalized counts and add feature call metadata
+normCounts <- GetAssayData(data, assay = "oBC", layer = "data") %>%
+  as_tibble(rownames = "ligand") %>%
+  pivot_longer(-ligand, names_to = "cell_bc", values_to = "expression") %>%
+  left_join(metadata, by="cell_bc")
+
+# summarize mean expression
+summaryCounts <- normCounts %>%
+  group_by(oBC_feature_call, ligand) %>%
+  summarise(mean_exp = mean(expression))
+```
+
+```{r, fig.height=14, fig.width=16}
+summaryCounts %>%
+  filter(!grepl("-pool",oBC_feature_call)) %>%
+  filter(!grepl("-pool",ligand)) %>%
+  ggplot(aes(x=oBC_feature_call,y=ligand,fill=mean_exp)) +
+    geom_tile() +
+    scale_fill_viridis_c() +
+    ggtitle("oBC Mean CLR normalized counts in Feature Calls") +
+    theme(aspect.ratio = 1,
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r, fig.height=14, fig.width=16}
+summaryCounts %>%
+  ggplot(aes(x=oBC_feature_call,y=ligand,fill=mean_exp)) +
+    geom_tile() +
+    scale_fill_viridis_c() +
+    ggtitle("oBC Mean CLR normalized counts in Feature Calls") +
+    theme(aspect.ratio = 1,
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## [Barcode MFI correlations]{.underline}
+
+First, lets see if barcode counts correlate with mBaoJin MFI by flow. I am mainly concerned with whether there is some independent assortment of barcode containing virus and ligand displaying virus.
+
+We'll filter to only include cells from lane 1 because lane 2 was sorted so it's not really representative of raw MFI -> barcode correlations
+
+```{r}
+metadata <- data@meta.data %>%
+  as_tibble(rownames = "cell_bc")
+
+# extract CLR normalized counts and add feature call metadata
+normCounts <- GetAssayData(data, assay = "oBC", layer = "data") %>%
+  as_tibble(rownames = "ligand") %>%
+  pivot_longer(-ligand, names_to = "cell_bc", values_to = "expression") %>%
+  left_join(metadata, by="cell_bc")
+
+# summarize mean expression
+# filter by lane 1
+summaryCounts <- normCounts %>%
+  filter(gem_group == "lane1") %>%
+  group_by(oBC_feature_call, ligand) %>%
+  summarise(mean_exp = mean(expression),
+            mean_log1p_umi = mean(oBC_log1p_total_counts))
+
+# join summary counts from above with MFI
+# filter to only include matching feature_call ligand pairs
+summaryCountsCalled <- summaryCounts %>%
+  left_join(meta, by="oBC_feature_call") %>%
+  filter(oBC_feature_call == ligand)
+```
+
+```{r, fig.height=5, fig.width=10}
+p1 <- summaryCountsCalled %>%
+  ggplot(aes(x=mBaojin_MFI_log10,y=mean_exp)) +
+    geom_point() +
+    ylab("oBC mean norm expression\nof respective barcode") +
+    theme(aspect.ratio = 1)
+
+p2 <- summaryCountsCalled %>%
+  ggplot(aes(x=mBaojin_MFI_log10,y=mean_exp)) +
+    geom_point() +
+    geom_text_repel(aes(label = oBC_feature_call)) +
+    ylab("oBC mean norm expression\nof respective barcode") +
+    theme(aspect.ratio = 1)
+
+p1+p2
+```
+
+There's a good trend with flow MFI and barcode detection. IL12 is kind of an outlier which probably explains why I didn't see anything in the perturbation.
+
+```{r}
+# summarize mean expression
+# filter by lane 1
+summaryCounts <- normCounts %>%
+  group_by(gem_group, oBC_feature_call, ligand) %>%
+  summarise(mean_exp = mean(expression))
+
+# join summary counts from above with MFI
+# filter to only include matching feature_call ligand pairs
+summaryCountsCalled <- summaryCounts %>%
+  left_join(meta, by="oBC_feature_call") %>%
+  filter(oBC_feature_call == ligand)
+
+summaryCountsCalled %>%
+  ggplot(aes(x = gem_group, y = mean_exp, fill = gem_group)) +
+    geom_line(aes(group = oBC_feature_call)) +
+    geom_boxplot() +
+    geom_point() +
+    ylab("oBC mean norm expression\nof respective barcode") +
+    theme(aspect.ratio = 1)
+```
+
+As expected lane 2, which is flow sorted for mBaoJin+ cells has a tighter distribution especially towards the bottom end. The distributions are a bit shifted because the lane 2 amplification of oBC was worse for some reason. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

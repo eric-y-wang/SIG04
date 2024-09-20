@@ -30,6 +30,7 @@ theme_set(theme_Publication())
 ```{r}
 degFulloBCcov <- read_csv("analysis_outs/DEG_MAST_full.csv")
 degFullp139cov <- read_csv("analysis_outs/DEG_MAST_p139covariate_full.csv")
+degLane2 <- read_csv("analysis_outs/DEG_MAST_lane2.csv")
 ```
 
 ```{r}
@@ -37,6 +38,8 @@ degFullp139cov <- read_csv("analysis_outs/DEG_MAST_p139covariate_full.csv")
 data <- readRDS("C:/Users/Eric/Documents/datasets/EYW/SIG04_10x_240816/seurat_outs/SIG04_postqc_seurat.rds")
 data <- subset(data, subset = oBC_classification == "singlet")
 ```
+
+## [Perturbation # Quantification]{.underline}
 
 ```{r}
 pertNum <- data@meta.data %>%
@@ -59,11 +62,22 @@ pertNum %>%
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 ```
 
-
-
-## [Perturbation # Quantification]{.underline}
-
-
+```{r, fig.height=13, fig.width=10}
+data@meta.data %>%
+  group_by(oBC_feature_call,gem_group) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x=oBC_feature_call,y=n,fill=oBC_feature_call)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=0.5, hjust=-0.25) +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_flip() +
+    facet_wrap(~gem_group) +
+    xlab("ligand") +
+    ylab("# cells") +
+    ggtitle("Pert Quant in Full Dataset") +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
 
 ## [DEG Quantification]{.underline}
 
@@ -78,6 +92,9 @@ degFulloBCcov <- degFulloBCcov %>%
   filter(!grepl("-pool",comp_1))
 
 degFullp139cov <- degFullp139cov %>%
+  filter(!grepl("-pool",comp_1))
+
+degLane2 <- degLane2 %>%
   filter(!grepl("-pool",comp_1))
 ```
 
@@ -123,30 +140,58 @@ It's interesting that there's such a big difference between the two for IL2. In 
 ### DEG uniqueness
 
 ```{r}
-degFulloBCcovSig %>%
+degFulloBCcov %>%
+  filter(p_val_adj < 0.1) %>%
   group_by(genes) %>%
   summarise(n = n()) %>%
   ggplot(aes(x=n)) +
     geom_histogram() +
-    xlab("# of ligands in which DEG") +
-    ggtitle("distribution of genes")
+    xlab("# of ligands in which DEG is present") +
+    ggtitle("distribution of genes Full")
+
+degLane2 %>%
+  filter(p_val_adj < 0.1) %>%
+  group_by(genes) %>%
+  summarise(n = n()) %>%
+  ggplot(aes(x=n)) +
+    geom_histogram() +
+    xlab("# of ligands in which DEG is present") +
+    ggtitle("distribution of genes Lane 2")
 ```
-Let's remove the "heavy hitters" of IL6 and IL2, which 
 ```{r}
 # categorize genes by uniqueness
 geneClass <- degFulloBCcovSig %>%
+  filter(p_val_adj < 0.1) %>%
   group_by(genes) %>%
   summarise(n_ligand = n()) %>%
   mutate(class = case_when(n_ligand == 1 ~ "unique",
-                           n_ligand > 1 & n_ligand <=5 ~ "1-5",
-                           n_ligand > 5 & n_ligand <=10 ~ "5-10",
-                           n_ligand > 10 ~ "10+")) %>%
-  mutate(class = factor(class, c("unique","1-5","5-10","10+")))
+                           n_ligand > 1 & n_ligand <=5 ~ "moderate (1-5)",
+                           n_ligand > 5 & n_ligand <=10 ~ "high (5-10)",
+                           n_ligand > 10 ~ "very high (10+)")) %>%
+  mutate(class = factor(class, c("unique","moderate (1-5)","high (5-10)","very high (10+)")))
+
+# categorize genes by uniqueness
+geneClassLane2 <- degLane2 %>%
+  filter(p_val_adj < 0.1) %>%
+  group_by(genes) %>%
+  summarise(n_ligand = n()) %>%
+  mutate(class = case_when(n_ligand == 1 ~ "unique",
+                           n_ligand > 1 & n_ligand <=5 ~ "moderate (1-5)",
+                           n_ligand > 5 & n_ligand <=10 ~ "high (5-10)",
+                           n_ligand > 10 ~ "very high (10+)")) %>%
+  mutate(class = factor(class, c("unique","moderate (1-5)","high (5-10)","very high (10+)")))
 ```
 
 ```{r}
-geneClass %>%
-  filter(class == "10+")
+degFulloBCcovSig <- degFulloBCcov %>%
+  filter(p_val_adj < 0.1) %>%
+  left_join(geneClass, by="genes")
+write_csv(degFulloBCcovSig,"analysis_outs/DEG_MAST_full_sig_geneClass.csv")
+
+degLane2Sig <- degLane2 %>%
+  filter(p_val_adj < 0.1) %>%
+  left_join(geneClassLane2, by="genes")
+write_csv(degLane2Sig,"analysis_outs/DEG_MAST_lane2_sig_geneClass.csv")
 ```
 
 ```{r, fig.height=7, fig.width=4}
@@ -240,7 +285,7 @@ degSig <- degFulloBCcov %>%
 
 ```{r, fig.height=8, fig.width=8}
 # subset data
-dataSub <- subset(data, subset = oBC_feature_call %in% c("CXCL9","CXCL10","CXCL11","IFNA","p129"))
+dataSub <- subset(data, subset = oBC_feature_call %in% c("CXCL9","CXCL10","CXCL11","CXCL12","IFNA","p129") & gem_group == "lane2")
 dataSub <- ScaleData(dataSub, features = rownames(dataSub))
 
 # make heatmap with significant genes
@@ -248,9 +293,31 @@ genes <-  filter(degSig, comp_1 %in% c("CXCL9","CXCL10","CXCL11"))$genes %>% uni
 DoHeatmap(dataSub, features = genes, group.by = "oBC_feature_call")
 ```
 
+```{r}
+library(ggpointdensity)
+test <- tibble(Ifi27l2a_counts = GetAssayData(dataSub, assay = "RNA", layer = "counts")["p139-T7oBC5p-MS2",],
+               Ifi27l2a_scale = GetAssayData(dataSub, assay = "RNA", layer = "scale.data")["p139-T7oBC5p-MS2",],
+               oBC_nCount = dataSub$oBC_log1p_total_counts,
+               gem_group = dataSub$gem_group,
+               feature_call = dataSub$oBC_feature_call)
+
+test %>%
+  filter(gem_group == "lane2") %>%
+  ggplot(aes(x = Ifi27l2a_scale, y = oBC_nCount)) +
+    geom_pointdensity() +
+    geom_density_2d() +
+    scale_color_viridis_c()
+```
+
+
+```{r, fig.height=6, fig.width=10}
+VlnPlot(dataSub, c("Izumo1r","Ifi27l2a","Tap1","Stat1"), group.by = "oBC_feature_call", ncol = 2, pt.size = 0)
+```
+
+
 ```{r, fig.height=10, fig.width=10}
 # subset data
-dataSub <- subset(data, subset = oBC_feature_call %in% c("GDF2","GDF11","p129"))
+dataSub <- subset(data, subset = oBC_feature_call %in% c("GDF2","GDF11","p129") & gem_group == "lane2")
 dataSub <- ScaleData(dataSub, features = rownames(dataSub))
 
 # make heatmap with significant genes
@@ -258,6 +325,11 @@ genes <-  filter(degSig, comp_1 %in% c("GDF2","GDF11","p129"))$genes %>% unique(
 DoHeatmap(dataSub, features = genes, group.by = "oBC_feature_call")
 ```
 
+```{r}
+# subset data
+dataSub <- subset(data, subset = oBC_feature_call %in% c("CXCL9","CXCL10","CXCL11","IFNA","p129") & gem_group == "lane2")
+dataSub <- ScaleData(dataSub, features = rownames(dataSub))
+```
 
 
 

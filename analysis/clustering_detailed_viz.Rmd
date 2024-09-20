@@ -1,0 +1,150 @@
+---
+title: "Clustering Detailed visualizations"
+author: "Eric Y. Wang"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  github_document:
+    toc: true
+    html_preview: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(ggrepel)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("functions/plotting_fxns.R")
+source("functions/scRNA_seq_analysis_functions.R")
+theme_set(theme_Publication())
+```
+
+## [Import data]{.underline}
+
+```{r}
+dataLog1p <- read_csv("analysis_outs/mean_aggregated_normUMI_log1p.csv") %>%
+  pivot_longer(-oBC_feature_call, names_to = "genes", values_to = "expression")
+dataZscore <- read_csv("analysis_outs/mean_aggregated_normUMI_Zscore.csv") %>%
+  pivot_longer(-oBC_feature_call, names_to = "genes", values_to = "expression")
+```
+
+![](images/clipboard-949539116.png)
+
+## [Scatterplot Visualizations]{.underline}
+
+### Believable Clusters
+
+Let's take a look at what the scatterplots look like for the more believable
+structure in the dataset
+
+```{r}
+scatterViz <- function(data,x,y,label=FALSE,label_x=NA,label_y=NA){
+  data <- filter(data, oBC_feature_call %in% c(x,y)) %>%
+    pivot_wider(id_cols = genes, names_from = oBC_feature_call, values_from = expression)
+  
+  if(label == F){
+     p1 <- ggplot(data, aes_string(x=x, y=y)) +
+      geom_point() +
+      theme(aspect.ratio = 1)
+  }
+ 
+  if(label == T){
+    # make column for labels
+    data$label <- ifelse(data[[x]] > label_x | data[[x]] < -label_x | data[[y]] > label_y | data[[y]] < -label_y,
+                     as.character(data$genes), NA)
+    
+    p1 <- ggplot(data, aes_string(x=x, y=y)) +
+      geom_point() +
+      geom_text_repel(aes(label = label)) +
+      theme(aspect.ratio = 1)
+  } 
+  
+  return(p1)
+}
+```
+
+```{r, fig.height=10, fig.width=15}
+scatterViz(dataZscore, "IFNG","IL27", label = T, label_x = 1, label_y = 1) +
+  scatterViz(dataZscore, "IFNA","IFNB1", label = T, label_x = 2, label_y = 2) +
+  scatterViz(dataZscore, "IFNA","IFNK", label = T, label_x = 2, label_y = 2) +
+  scatterViz(dataZscore, "IL6","IL21", label = T, label_x = 1, label_y = 1) +
+  scatterViz(dataZscore, "IL6","IL11", label = T, label_x = 1.5, label_y = 0.2)
+```
+
+```{r, fig.height=10, fig.width=15}
+scatterViz(dataLog1p, "IFNG","p129") +
+  scatterViz(dataLog1p, "IFNA","p129") +
+  scatterViz(dataLog1p, "IL6","p129") +
+  scatterViz(dataLog1p, "IL21","p129") +
+  scatterViz(dataLog1p, "IL11","p129") +
+  scatterViz(dataLog1p, "IL7","p129")
+```
+
+### GDF2/CCL25/CXCL11
+
+```{r, fig.width=15, fig.height=5}
+scatterViz(dataZscore, "GDF2","CCL25", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "GDF2","CXCL11", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "CXCL11","CCL25", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+### TNF/OSM/TSLP
+
+```{r, fig.width=15, fig.height=5}
+scatterViz(dataZscore, "TNF","OSM", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TNF","TSLP", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "OSM","TSLP", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+### Cluster 2
+
+![](images/clipboard-3024793463.png)
+
+We can see that IL1A, IL15, ADIPOQ, and TGFB3 form a small cluster while MIF,
+TNF, IL9, OSM, and TSLP form a different cluster. There is quite a bit of
+correlation between these two though.
+
+```{r, fig.width=15, fig.height=10}
+scatterViz(dataZscore, "TNF","OSM", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TSLP","OSM", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TNF","TSLP", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "IL1A","IL15", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "ADIPOQ","IL15", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TGFB3","IL15", label = T, label_x = 0.2, label_y = 0.2) +
+  plot_layout(ncol=3)
+```
+
+```{r, fig.height=5, fig.width=10}
+scatterViz(dataZscore, "CXCL9","CXCL10", label = T, label_x = 0.5, label_y = 0.5) +
+  scatterViz(dataZscore, "CXCL9","IFNA", label = T, label_x = 0.5, label_y = 0.5)
+```
+
+```{r}
+scatterViz(dataZscore, "IL12","p129", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+```{r, fig.width=15, fig.height=5}
+scatterViz(dataZscore, "TGFB1","TGFB2", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TGFB1","TGFB3", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TGFB2","TGFB3", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+```{r, fig.width=15, fig.height=10}
+scatterViz(dataZscore, "GDF2","CCL25", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "CXCL11","CCL25", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "GDF2","CXCL11", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "GDF2","TNF", label = T, label_x = 0.2, label_y = 0.2) +
+  plot_layout(ncol=3)
+```
+
+```{r}
+scatterViz(dataZscore, "CXCL11","CXCL10", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "CXCL11","CXCL9", label = T, label_x = 0.2, label_y = 0.2)
+```
