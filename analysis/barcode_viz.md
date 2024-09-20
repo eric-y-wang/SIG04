@@ -61,6 +61,7 @@ summaryCounts %>%
   filter(!grepl("-pool",ligand)) %>%
   ggplot(aes(x=oBC_feature_call,y=ligand,fill=mean_exp)) +
     geom_tile() +
+    ylab("oBC barcode") +
     scale_fill_viridis_c() +
     ggtitle("oBC Mean CLR normalized counts in Feature Calls") +
     theme(aspect.ratio = 1,
@@ -74,6 +75,7 @@ summaryCounts %>%
   ggplot(aes(x=oBC_feature_call,y=ligand,fill=mean_exp)) +
     geom_tile() +
     scale_fill_viridis_c() +
+    ylab("oBC barcode") +
     ggtitle("oBC Mean CLR normalized counts in Feature Calls") +
     theme(aspect.ratio = 1,
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
@@ -151,19 +153,30 @@ p1+p2
 ![](barcode_viz_files/figure-gfm/unnamed-chunk-8-1.png)<!-- -->
 
 There’s a good trend with flow MFI and barcode detection. IL12 is kind
-of an outlier which probably explains why I didn’t see anything in the
+of an outlier which maybe explains why I didn’t see anything in the
 perturbation.
 
 ``` r
 # summarize mean expression
 # filter by lane 1
 summaryCounts <- normCounts %>%
+  group_by(gem_group) %>%
+  mutate(mean_gem_group = mean(expression)) %>%
   group_by(gem_group, oBC_feature_call, ligand) %>%
-  summarise(mean_exp = mean(expression))
+  summarise(mean_exp = mean(expression),
+            mean_norm_exp = mean(expression)-mean_gem_group)
 ```
 
-    ## `summarise()` has grouped output by 'gem_group', 'oBC_feature_call'. You can
-    ## override using the `.groups` argument.
+    ## Warning: Returning more (or less) than 1 row per `summarise()` group was deprecated in
+    ## dplyr 1.1.0.
+    ## ℹ Please use `reframe()` instead.
+    ## ℹ When switching from `summarise()` to `reframe()`, remember that `reframe()`
+    ##   always returns an ungrouped data frame and adjust accordingly.
+    ## Call `lifecycle::last_lifecycle_warnings()` to see where this warning was
+    ## generated.
+
+    ## `summarise()` has grouped output by 'gem_group', 'oBC_feature_call', 'ligand'.
+    ## You can override using the `.groups` argument.
 
 ``` r
 # join summary counts from above with MFI

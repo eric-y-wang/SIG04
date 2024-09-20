@@ -62,6 +62,7 @@ summaryCounts %>%
   filter(!grepl("-pool",ligand)) %>%
   ggplot(aes(x=oBC_feature_call,y=ligand,fill=mean_exp)) +
     geom_tile() +
+    ylab("oBC barcode") +
     scale_fill_viridis_c() +
     ggtitle("oBC Mean CLR normalized counts in Feature Calls") +
     theme(aspect.ratio = 1,
@@ -73,6 +74,7 @@ summaryCounts %>%
   ggplot(aes(x=oBC_feature_call,y=ligand,fill=mean_exp)) +
     geom_tile() +
     scale_fill_viridis_c() +
+    ylab("oBC barcode") +
     ggtitle("oBC Mean CLR normalized counts in Feature Calls") +
     theme(aspect.ratio = 1,
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
@@ -126,14 +128,17 @@ p2 <- summaryCountsCalled %>%
 p1+p2
 ```
 
-There's a good trend with flow MFI and barcode detection. IL12 is kind of an outlier which probably explains why I didn't see anything in the perturbation.
+There's a good trend with flow MFI and barcode detection. IL12 is kind of an outlier which maybe explains why I didn't see anything in the perturbation.
 
 ```{r}
 # summarize mean expression
 # filter by lane 1
 summaryCounts <- normCounts %>%
+  group_by(gem_group) %>%
+  mutate(mean_gem_group = mean(expression)) %>%
   group_by(gem_group, oBC_feature_call, ligand) %>%
-  summarise(mean_exp = mean(expression))
+  summarise(mean_exp = mean(expression),
+            mean_norm_exp = mean(expression)-mean_gem_group)
 
 # join summary counts from above with MFI
 # filter to only include matching feature_call ligand pairs
