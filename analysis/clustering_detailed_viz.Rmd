@@ -35,8 +35,6 @@ dataZscore <- read_csv("analysis_outs/mean_aggregated_normUMI_Zscore.csv") %>%
   pivot_longer(-oBC_feature_call, names_to = "genes", values_to = "expression")
 ```
 
-![](images/clipboard-949539116.png)
-
 ## [Scatterplot Visualizations]{.underline}
 
 ### Believable Clusters
@@ -103,9 +101,23 @@ scatterViz(dataZscore, "TNF","OSM", label = T, label_x = 0.2, label_y = 0.2) +
   scatterViz(dataZscore, "OSM","TSLP", label = T, label_x = 0.2, label_y = 0.2)
 ```
 
-### Cluster 2
+### ADIPOQ Cluster
 
-![](images/clipboard-3024793463.png)
+```{r, fig.width=15, fig.height=5}
+scatterViz(dataZscore, "ADIPOQ","TGFB3", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "ADIPOQ","IL15", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "ADIPOQ","IL1A", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+### TGFBs
+
+```{r, fig.width=15, fig.height=5}
+scatterViz(dataZscore, "TGFB1","TGFB3", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TGFB2","TGFB3", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "TGFB1","TGFB2", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+### Cluster 2
 
 We can see that IL1A, IL15, ADIPOQ, and TGFB3 form a small cluster while MIF,
 TNF, IL9, OSM, and TSLP form a different cluster. There is quite a bit of
@@ -145,6 +157,13 @@ scatterViz(dataZscore, "GDF2","CCL25", label = T, label_x = 0.2, label_y = 0.2) 
 ```
 
 ```{r}
-scatterViz(dataZscore, "CXCL11","CXCL10", label = T, label_x = 0.2, label_y = 0.2) +
+scatterViz(dataZscore, "IL15","TGFB3", label = T, label_x = 0.2, label_y = 0.2) +
   scatterViz(dataZscore, "CXCL11","CXCL9", label = T, label_x = 0.2, label_y = 0.2)
+```
+
+```{r, fig.height=10, fig.wdith=15}
+scatterViz(dataZscore, "IL17F","IL17A", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "IL25","IL17A", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "IL17B","IL17A", label = T, label_x = 0.2, label_y = 0.2) +
+  scatterViz(dataZscore, "WNT1","IL17A", label = T, label_x = 0.2, label_y = 0.2)
 ```

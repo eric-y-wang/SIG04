@@ -28,6 +28,7 @@ theme_set(theme_Publication())
 ## [Import data]{.underline}
 
 ```{r}
+degGem <- read_csv("analysis_outs/DEG_MAST_full_gem.csv")
 degFulloBCcov <- read_csv("analysis_outs/DEG_MAST_full.csv")
 degFullp139cov <- read_csv("analysis_outs/DEG_MAST_p139covariate_full.csv")
 degLane2 <- read_csv("analysis_outs/DEG_MAST_lane2.csv")
@@ -47,14 +48,14 @@ pertNum <- data@meta.data %>%
   summarise(n = n())
 pertNum
 ```
+p129 has 5857 cells in the full dataset
 
-```{r, fig.height=13, fig.width=5}
+```{r, fig.height=5, fig.width=15}
 pertNum %>%
   ggplot(aes(x=oBC_feature_call,y=n,fill=oBC_feature_call)) +
     geom_bar(stat = "identity") +
-    geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=0.5, hjust=-0.25) +
+    geom_text(aes(label=n), position=position_dodge(width=0.9), angle=90, vjust=0.5, hjust=-0.25) +
     scale_y_continuous(expand = c(0, 0)) +
-    coord_flip() +
     xlab("ligand") +
     ylab("# cells") +
     ggtitle("Pert Quant in Full Dataset") +
@@ -62,16 +63,15 @@ pertNum %>%
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 ```
 
-```{r, fig.height=13, fig.width=10}
+```{r, fig.height=10, fig.width=15}
 data@meta.data %>%
   group_by(oBC_feature_call,gem_group) %>%
   summarise(n = n()) %>%
   ggplot(aes(x=oBC_feature_call,y=n,fill=oBC_feature_call)) +
     geom_bar(stat = "identity") +
-    geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=0.5, hjust=-0.25) +
+    geom_text(aes(label=n), position=position_dodge(width=0.9), angle=90, vjust=0.5, hjust=-0.25) +
     scale_y_continuous(expand = c(0, 0)) +
-    coord_flip() +
-    facet_wrap(~gem_group) +
+    facet_wrap(~gem_group, ncol = 1) +
     xlab("ligand") +
     ylab("# cells") +
     ggtitle("Pert Quant in Full Dataset") +
@@ -94,12 +94,15 @@ degFulloBCcov <- degFulloBCcov %>%
 degFullp139cov <- degFullp139cov %>%
   filter(!grepl("-pool",comp_1))
 
+degGem <- degGem %>%
+  filter(!grepl("-pool",comp_1))
+
 degLane2 <- degLane2 %>%
   filter(!grepl("-pool",comp_1))
 ```
 
-First, look at number of DEGs per ligand. 
-```{r, fig.width=10, fig.height=13}
+First, look at number of DEGs per ligand with different barcode adjustments. 
+```{r, fig.width=15, fig.height=10}
 p1 <- degFulloBCcov %>%
   mutate(sig = ifelse(p_val_adj < 0.1,T,F)) %>%
   group_by(comp_1) %>%
@@ -107,9 +110,8 @@ p1 <- degFulloBCcov %>%
   mutate(comp_1 = fct_reorder(comp_1,n)) %>%
   ggplot(aes(x=comp_1,y=n,fill=comp_1)) +
     geom_bar(stat = "identity") +
-    geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=0.5, hjust=-0.25) +
+    geom_text(aes(label=n), position=position_dodge(width=0.9),angle=90, vjust=0.5, hjust=-0.25) +
     scale_y_continuous(expand = c(0, 0), limits = c(0,1500)) +
-    coord_flip() +
     xlab("ligand") +
     ylab("# DEG (p_adj < 0.1)") +
     ggtitle("DEG nCount oBC adjusted") +
@@ -123,24 +125,59 @@ p2 <- degFullp139cov %>%
   mutate(comp_1 = fct_reorder(comp_1,n)) %>%
   ggplot(aes(x=comp_1,y=n,fill=comp_1)) +
     geom_bar(stat = "identity") +
-    geom_text(aes(label=n), position=position_dodge(width=0.9), vjust=0.5, hjust=-0.25) +
+    geom_text(aes(label=n), position=position_dodge(width=0.9),angle=90, vjust=0.5, hjust=-0.25) +
     scale_y_continuous(expand = c(0, 0), limits = c(0,1500)) +
-    coord_flip() +
     xlab("ligand") +
     ylab("# DEG (p_adj < 0.1)") +
     ggtitle("DEG p139 transcript adjusted") +
     theme(legend.position = "none",
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
-p1+p2
+p1/p2
 ```
 
 It's interesting that there's such a big difference between the two for IL2. In general it seems like adjusting using p139 transcript (which is much sparser than oBC) leads to decreased DEG identification. I'm not sure exactly is this is more or less "correct" as it could be an overcorrection. Perhaps IL2 is impacted in particular because there's more virus uptake? 
 
+```{r, fig.width=15, fig.height=10}
+p1 <- degGem %>%
+  mutate(sig = ifelse(p_val_adj < 0.1,T,F)) %>%
+  group_by(comp_1) %>%
+  summarise(n = sum(sig)) %>%
+  mutate(comp_1 = fct_rev(fct_reorder(comp_1,n))) %>%
+  ggplot(aes(x=comp_1,y=n,fill=comp_1)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label=n), position=position_dodge(width=0.9),angle=90, vjust=0.5, hjust=-0.25) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0,1500)) +
+    xlab("ligand") +
+    ylab("# DEG (p_adj < 0.1)") +
+    ggtitle("DEG nCount oBC adjusted") +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p2 <- degLane2 %>%
+  mutate(sig = ifelse(p_val_adj < 0.1,T,F)) %>%
+  group_by(comp_1) %>%
+  summarise(n = sum(sig)) %>%
+  mutate(comp_1 = fct_rev(fct_reorder(comp_1,n))) %>%
+  ggplot(aes(x=comp_1,y=n,fill=comp_1)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label=n), position=position_dodge(width=0.9),angle=90, vjust=0.5, hjust=-0.25) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0,1500)) +
+    xlab("ligand") +
+    ylab("# DEG (p_adj < 0.1)") +
+    ggtitle("DEG p139 transcript adjusted") +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+p1/p2
+```
+
+
 ### DEG uniqueness
 
 ```{r}
-degFulloBCcov %>%
+degGem %>%
   filter(p_val_adj < 0.1) %>%
   group_by(genes) %>%
   summarise(n = n()) %>%
@@ -160,7 +197,7 @@ degLane2 %>%
 ```
 ```{r}
 # categorize genes by uniqueness
-geneClass <- degFulloBCcovSig %>%
+geneClass <- degGem %>%
   filter(p_val_adj < 0.1) %>%
   group_by(genes) %>%
   summarise(n_ligand = n()) %>%
@@ -183,15 +220,29 @@ geneClassLane2 <- degLane2 %>%
 ```
 
 ```{r}
-degFulloBCcovSig <- degFulloBCcov %>%
+degGemSig <- degGem %>%
   filter(p_val_adj < 0.1) %>%
   left_join(geneClass, by="genes")
-write_csv(degFulloBCcovSig,"analysis_outs/DEG_MAST_full_sig_geneClass.csv")
+write_csv(degGemSig,"analysis_outs/DEG_MAST_gem_sig_geneClass.csv")
+
+degGemSigGenes <- degGem %>%
+  filter(p_val_adj < 0.1) %>%
+  left_join(geneClass, by="genes") %>%
+  select(genes, n_ligand, class) %>%
+  unique()
+write_csv(degGemSig,"analysis_outs/DEG_MAST_gem_sig_geneClass_genes_only.csv")
 
 degLane2Sig <- degLane2 %>%
   filter(p_val_adj < 0.1) %>%
   left_join(geneClassLane2, by="genes")
 write_csv(degLane2Sig,"analysis_outs/DEG_MAST_lane2_sig_geneClass.csv")
+
+degLane2SigGenes <- degLane2 %>%
+  filter(p_val_adj < 0.1) %>%
+  left_join(geneClass, by="genes") %>%
+  select(genes, n_ligand, class) %>%
+  unique()
+write_csv(degGemSig,"analysis_outs/DEG_MAST_lane2_sig_geneClass_genes_only.csv")
 ```
 
 ```{r, fig.height=7, fig.width=4}
