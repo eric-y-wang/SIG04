@@ -29,9 +29,9 @@ theme_set(theme_Publication())
 ## [Import data]{.underline}
 
 ```{r}
-dataLog1p <- read_csv("analysis_outs/mean_aggregated_normUMI_log1p.csv") %>%
+dataLog1p <- read_csv("analysis_outs/mean_aggregated_normUMI_log1p_lane2.csv") %>%
   pivot_longer(-oBC_feature_call, names_to = "genes", values_to = "expression")
-dataZscore <- read_csv("analysis_outs/mean_aggregated_normUMI_Zscore.csv") %>%
+dataZscore <- read_csv("analysis_outs/mean_aggregated_normUMI_Zscore_lane2.csv") %>%
   pivot_longer(-oBC_feature_call, names_to = "genes", values_to = "expression")
 ```
 
@@ -156,9 +156,9 @@ scatterViz(dataZscore, "GDF2","CCL25", label = T, label_x = 0.2, label_y = 0.2) 
   plot_layout(ncol=3)
 ```
 
-```{r}
-scatterViz(dataZscore, "IL15","TGFB3", label = T, label_x = 0.2, label_y = 0.2) +
-  scatterViz(dataZscore, "CXCL11","CXCL9", label = T, label_x = 0.2, label_y = 0.2)
+```{r, fig.height=10, fig.width=20}
+scatterViz(dataZscore, "TNFSF15","IL16", label = T, label_x = 0.1, label_y = 0.1) +
+  scatterViz(dataZscore, "WNT1","IL16", label = T, label_x = 0.1, label_y = 0.1)
 ```
 
 ```{r, fig.height=10, fig.wdith=15}

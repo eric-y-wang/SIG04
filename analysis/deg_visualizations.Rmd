@@ -3,12 +3,12 @@ title: "SIG04 DEG visualizations"
 author: "Eric Y. Wang"
 date: "`r Sys.Date()`"
 output:
-  github_document:
-    toc: true
-    html_preview: false
   html_notebook:
     toc: true
     toc_float: true
+  github_document:
+    toc: true
+    html_preview: false
 ---
 
 ```{r setup, include=FALSE}
@@ -16,6 +16,7 @@ library(tidyverse)
 library(Seurat)
 library(ggplot2)
 library(patchwork)
+library(ggrepel)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -79,6 +80,38 @@ data@meta.data %>%
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 ```
 
+```{r}
+assignments <- data@meta.data %>%
+  group_by(oBC_feature_call,gem_group) %>%
+  summarise(n = n())
+
+write_csv(assignments, "analysis_outs/feature_assignment_counts.csv")
+```
+```{r, fig.height=5, fig.width=4}
+assignments %>%
+  filter(oBC_feature_call != "p129") %>%
+  ggplot(aes(x=gem_group,y=n)) +
+    geom_violin(trim = FALSE, color = "black") +
+    geom_boxplot(width = 0.1, outlier.shape = NA, color = "black") +
+    ylab("# of cells") +
+    xlab("SIG04") +
+    ggtitle("Number of cells assigned\nper ligand (excluding p129)")
+```
+
+
+```{r, fig.height=5, fig.width=3}
+assignments %>%
+  filter(gem_group == "lane2" & oBC_feature_call != "p129") %>%
+  ggplot(aes(x="",y=n)) +
+    geom_violin(trim = FALSE, color = "black") +
+    geom_boxplot(width = 0.1, color = "black") +
+    scale_y_continuous(breaks = seq(0,1750,250)) +
+    ylab("# of cells") +
+    xlab("SIG04") +
+    ggtitle("# cell assigned\nper ligand (lane2)\nexcluding p129")
+```
+
+
 ## [DEG Quantification]{.underline}
 
 -   quantify number of degs per ligand
@@ -107,7 +140,7 @@ p1 <- degFulloBCcov %>%
   mutate(sig = ifelse(p_val_adj < 0.1,T,F)) %>%
   group_by(comp_1) %>%
   summarise(n = sum(sig)) %>%
-  mutate(comp_1 = fct_reorder(comp_1,n)) %>%
+  mutate(comp_1 = fct_rev(fct_reorder(comp_1,n))) %>%
   ggplot(aes(x=comp_1,y=n,fill=comp_1)) +
     geom_bar(stat = "identity") +
     geom_text(aes(label=n), position=position_dodge(width=0.9),angle=90, vjust=0.5, hjust=-0.25) +
@@ -122,7 +155,7 @@ p2 <- degFullp139cov %>%
   mutate(sig = ifelse(p_val_adj < 0.1,T,F)) %>%
   group_by(comp_1) %>%
   summarise(n = sum(sig)) %>%
-  mutate(comp_1 = fct_reorder(comp_1,n)) %>%
+  mutate(comp_1 = fct_rev(fct_reorder(comp_1,n))) %>%
   ggplot(aes(x=comp_1,y=n,fill=comp_1)) +
     geom_bar(stat = "identity") +
     geom_text(aes(label=n), position=position_dodge(width=0.9),angle=90, vjust=0.5, hjust=-0.25) +
@@ -213,10 +246,10 @@ geneClassLane2 <- degLane2 %>%
   group_by(genes) %>%
   summarise(n_ligand = n()) %>%
   mutate(class = case_when(n_ligand == 1 ~ "unique",
-                           n_ligand > 1 & n_ligand <=5 ~ "moderate (1-5)",
-                           n_ligand > 5 & n_ligand <=10 ~ "high (5-10)",
-                           n_ligand > 10 ~ "very high (10+)")) %>%
-  mutate(class = factor(class, c("unique","moderate (1-5)","high (5-10)","very high (10+)")))
+                           n_ligand > 1 & n_ligand <=4 ~ "moderate (1-4)",
+                           n_ligand > 4 & n_ligand <=8 ~ "high (4-8)",
+                           n_ligand > 8 ~ "very high (8+)")) %>%
+  mutate(class = factor(class, c("unique","moderate (1-4)","high (4-8)","very high (8+)")))
 ```
 
 ```{r}
@@ -245,7 +278,7 @@ degLane2SigGenes <- degLane2 %>%
 write_csv(degGemSig,"analysis_outs/DEG_MAST_lane2_sig_geneClass_genes_only.csv")
 ```
 
-```{r, fig.height=7, fig.width=4}
+```{r, fig.height=4, fig.width=10}
 # only pull out ligands with > 5 DEGs
 ligands <- degGem %>%
   left_join(geneClass, by="genes") %>%
@@ -261,7 +294,7 @@ degGem %>%
   group_by(comp_1,class) %>%
   summarise(n = n()) %>%
   mutate(comp_1 = fct_reorder(comp_1,n)) %>%
-  ggplot(aes(x=class,y=comp_1,fill=n)) +
+  ggplot(aes(x=comp_1,y=class,fill=n)) +
     geom_tile() +
     geom_text(aes(label = n, color = ifelse(n > 500, "black", "white")),
             vjust = 0.5, hjust = 0.5, size = 3) +
@@ -269,8 +302,38 @@ degGem %>%
     scale_color_manual(values = c("black", "white"), guide = "none") +
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
     ylab("ligand") +
-    ylab("DEG class")
+    ylab("DEG class") +
+    ggtitle("DEG distribution Full GEM Normalized")
 ```
+
+```{r, fig.height=4, fig.width=10}
+# only pull out ligands with > 5 DEGs
+ligands <- degLane2 %>%
+  left_join(geneClass, by="genes") %>%
+  mutate(sig = ifelse(p_val_adj < 0.1,T,F)) %>%
+  group_by(comp_1) %>%
+  summarise(n = sum(sig)) %>%
+  filter(n > 5)
+
+degLane2 %>%
+  filter(comp_1 %in% ligands$comp_1) %>%
+  filter(p_val_adj < 0.1) %>%
+  left_join(geneClassLane2, by="genes") %>%
+  group_by(comp_1,class) %>%
+  summarise(n = n()) %>%
+  mutate(comp_1 = fct_reorder(comp_1,n)) %>%
+  ggplot(aes(x=comp_1,y=class,fill=n)) +
+    geom_tile() +
+    geom_text(aes(label = n, color = ifelse(n > 500, "black", "white")),
+            vjust = 0.5, hjust = 0.5, size = 3) +
+    scale_fill_viridis_c() +
+    scale_color_manual(values = c("black", "white"), guide = "none") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    ylab("ligand") +
+    ylab("DEG class") +
+    ggtitle("DEG distribution Lane2")
+```
+
 
 ```{r, fig.height=15, fig.width=15}
 library(igraph)
@@ -327,7 +390,101 @@ plot(graph, layout = layout.fruchterman.reingold, edge.width = E(graph)$weight*0
 
 A few interesting things to note from this. CXCL9/10/11 have differnt signatures. CXCL9 is well connected to interferons while CXCL10/11 is not (even though the canonically both signal through CXCR3). This is well reflected in the DEGs.
 
-## [DEG Visualizations]{.underline}
+## [Volcano Plots Representative]{.underline}
+
+```{r}
+degLane2Plots <- degLane2
+degLane2Plots$sig <- degLane2Plots$p_val_adj < 0.1
+# I know this probably isn't kosher but I'm just going to replace
+# the p_val_adj that are 0 with the smallest number
+degLane2Plots <- degLane2Plots %>%
+  mutate(p_val_adj = ifelse(p_val_adj == 0, 1e-306, p_val_adj))
+```
+
+```{r, fig.height=5, fig.width=5}
+# helper function to make volcano plots
+plot_volcano <- function(deg_tibble,feature){
+  df <- deg_tibble %>%
+  filter(comp_1 == feature)
+
+  # Create the volcano plot
+  ggplot(df, aes(x = avg_log2FC, y = -log10(p_val_adj), color = sig)) +
+    geom_point(alpha = 0.7, size = 1) +  # Add points with transparency for better visualization
+    scale_color_manual(values = c("black", "red")) +  # Color significant points in red
+    geom_text_repel(data = subset(df, sig), aes(label = genes), color="black",
+                    max.overlaps = 10, size = 4) +  # Label significant points with ggrepel
+    labs(
+      x = "Log2FC",
+      y = "-log10(padj)",
+      title = paste0(feature," DEGs")
+    ) +
+    theme(legend.position = "none", aspect.ratio=1)
+}
+```
+
+```{r, fig.height=10, fig.width=12}
+p1 <- plot_volcano(degLane2Plots,"IL6")
+p2 <- plot_volcano(degLane2Plots,"TNF")
+p3 <- plot_volcano(degLane2Plots,"IFNA")
+p4 <- plot_volcano(degLane2Plots,"IFNG")
+p5 <- plot_volcano(degLane2Plots,"IL21")
+p6 <- plot_volcano(degLane2Plots,"IL4")
+
+p1+p2+p3+p4+p5+p6+plot_layout(ncol=3)
+
+#ggsave("analysis_outs/volcano_plots_known_ligands.pdf")
+```
+
+Plot genes with few DEGs but biologically actionable information:
+```{r, fig.height=10, fig.width=12}
+p1 <- plot_volcano(degLane2Plots,"IL7")
+p2 <- plot_volcano(degLane2Plots,"IL1A")
+p3 <- plot_volcano(degLane2Plots,"IL15")
+p4 <- plot_volcano(degLane2Plots,"CCL25")
+p5 <- plot_volcano(degLane2Plots,"CCL21A")
+
+p1+p2+p3+p4+p5+plot_layout(ncol=3)
+```
+
+```{r, fig.height=10, fig.width=12}
+p1 <- plot_volcano(degLane2Plots,"IL17A")
+p2 <- plot_volcano(degLane2Plots,"IL17B")
+p3 <- plot_volcano(degLane2Plots,"IL17C")
+p4 <- plot_volcano(degLane2Plots,"IL17F")
+p5 <- plot_volcano(degLane2Plots,"IL25")
+
+p1+p2+p3+p4+p5+plot_layout(ncol=3)
+```
+
+```{r, fig.height=5, fig.width=18}
+p1 <- plot_volcano(degLane2Plots,"IL1A")
+p2 <- plot_volcano(degLane2Plots,"IL33")
+p3 <- plot_volcano(degLane2Plots,"IL1B")
+p4 <- plot_volcano(degLane2Plots,"IL18")
+p5 <- plot_volcano(degLane2Plots,"IL1F6")
+
+p1+p2+p3+p4+p5+plot_layout(ncol=5)
+```
+
+```{r, fig.height=5, fig.width=12}
+p1 <- plot_volcano(degLane2Plots,"CXCL9")
+p2 <- plot_volcano(degLane2Plots,"CXCL10")
+p3 <- plot_volcano(degLane2Plots,"CXCL11")
+
+p1+p2+p3+plot_layout(ncol=3)
+```
+
+```{r, fig.height=10, fig.width=12}
+p1 <- plot_volcano(degLane2Plots,"GDF2")
+p2 <- plot_volcano(degLane2Plots,"GDF11")
+p3 <- plot_volcano(degLane2Plots,"GDF7")
+p4 <- plot_volcano(degLane2Plots,"GDF10")
+p5 <- plot_volcano(degLane2Plots,"GDF15")
+
+p1+p2+p3+p4+p5+plot_layout(ncol=3)
+```
+
+## [Heatmaps Representative]{.underline}
 
 ```{r}
 # get list of significant DEGs with shorter name lol
