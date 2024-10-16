@@ -1,0 +1,293 @@
+---
+title: "Pseudobulk sgRNA GEX effects CTR02"
+author: "Eric Wang"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_notebook:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(cowplot)
+library(grid)
+library(pheatmap)
+library(viridis)
+library(scales)
+library(DESeq2)
+library(ComplexHeatmap)
+library(SCENIC)
+library(AUCell)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("functions/scRNA_seq_analysis_functions.R")
+source("functions/plotting_fxns.R")
+theme_set(theme_Publication())
+```
+
+## [Data Import]{.underline}
+
+```{r}
+data <- readRDS("C:/Users/Eric/My Drive/Lab/datasets/EYW/CTR02_10x_240516/processing/CTR02_seurat_SCT_CRISPRumi9.rds")
+```
+
+Add some metadata columns
+
+```{r}
+# subset data to only cells with 1 feature
+data <- subset(data, subset = num_features == 1)
+data$feature_gene <- gsub("\\..*","",data$feature_call)
+# split hash ID into separate organ and CD62L status
+hashSplit <- data@meta.data %>%
+  dplyr::select(hash.ID) %>%
+  separate(hash.ID,c("organ","CD62L_status"), sep = "-")
+data$organ <- hashSplit$organ
+data$CD62L_status <- hashSplit$CD62L_status
+
+# add mixscape annotations
+mixscapeMeta <- read.csv("analysis_outs/mixscape_classification_metadata.csv", row.names = 1)
+data$mixscape_class.global <- mixscapeMeta$mixscape_class.global
+```
+
+Subset data to only keep cells with perturbations
+```{r}
+data <- subset(data, mixscape_class.global %in% c("KO","control"))
+```
+
+Add SCENIC data
+
+```{r}
+# import AUC matrix
+AUCmat <- read.csv("scenic_outs/auc_mtx.csv", row.names = "Regulon")
+colnames(AUCmat) <- gsub("\\.","-",colnames(AUCmat))
+AUCmat <- as.matrix(AUCmat)
+rownames(AUCmat)
+
+# subset AUCmat to only include cells in seurat object
+AUCmat <- AUCmat[,colnames(data)]
+
+# filter out extended regulons
+AUCmat <- AUCmat[onlyNonDuplicatedExtended(rownames(AUCmat)),]
+
+data[["AUC"]] <- CreateAssayObject(data = AUCmat)
+DefaultAssay(data) <- "AUC"
+data <- ScaleData(data)
+```
+
+## [Regulon Visualization]{.underline}
+
+### AUC HM and VP
+
+```{r, fig.height=10, fig.width=15}
+VlnPlot(data, c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)"),
+        group.by = "feature_call", assay = "AUC", pt.size = 0)
+```
+
+```{r, fig.height=10, fig.width=15}
+VlnPlot(data, c("Smad1(+)","Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)"),
+        group.by = "feature_call", assay = "AUC", pt.size = 0)
+```
+
+```{r}
+cellClusters <- data@meta.data
+# Split the cells by cluster:
+cellsPerCluster <- split(rownames(cellClusters), cellClusters[,"feature_call"]) 
+# Calculate average expression:
+regulonActivity_byCellType <- sapply(cellsPerCluster,
+                                     function(cells) rowMeans(AUCmat[,cells]))
+# Scale expression:
+regulonActivity_byCellType_Scaled <- t(scale(t(regulonActivity_byCellType), center = T, scale=T))
+```
+
+```{r, fig.height=25, fig.width=4}
+Heatmap(regulonActivity_byCellType_Scaled, name="Regulon activity",
+                       row_names_gp=grid::gpar(fontsize=6))
+```
+
+```{r, fig.height=3, fig.width=5}
+regulonSubset <- c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)",
+                   "Smad1(+)","Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)")
+
+regulonActivity_byCellType_Scaled_subset <- regulonActivity_byCellType_Scaled[regulonSubset,]
+
+Heatmap(regulonActivity_byCellType_Scaled_subset, name="Scaled\nRegulon\nActivity",
+                       row_names_gp=grid::gpar(fontsize=6))
+```
+
+```{r, fig.height=3, fig.width=5}
+regulonSubset <- c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)",
+                   "Smad1(+)","Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)",
+                   "Irf3(+)","Irf4(+)","Irf5(+)","Irf6(+)","Irf7(+)","Irf8(+)",
+                   "Irf9(+)","Nfkb1(+)")
+
+regulonActivity_byCellType_Scaled_subset <- regulonActivity_byCellType_Scaled[regulonSubset,]
+
+Heatmap(regulonActivity_byCellType_Scaled_subset, name="Scaled\nRegulon\nActivity",
+                       row_names_gp=grid::gpar(fontsize=6))
+
+
+```
+
+### AUC RSS
+
+```{r}
+cellClusters <- data.frame(feature_gene = data$feature_gene,
+                           row.names = colnames(data))
+
+rss <- calcRSS(AUC=AUCmat, cellAnnotation=data$feature_gene)
+```
+
+```{r, fig.height=6, fig.width=6}
+p1 <- plotRSS_oneSet(rss, setName = "Tgfbr2")
+p2 <- plotRSS_oneSet(rss, setName = "Ifngr1")
+p3 <- plotRSS_oneSet(rss, setName = "NTC")
+p4 <- plotRSS_oneSet(rss, setName = "NCC")
+
+(p1+p2)/(p3+p4)
+```
+
+
+## [Downsample Regulon Visualization]{.underline}
+
+Lets see if the regulons are preserved when I downsample the number of cells.
+
+```{r}
+data400 <- data[, sample(colnames(data), size = 12*300, replace = F)]
+data400 <- ScaleData(data400)
+```
+
+```{r}
+data400$feature_call %>%
+  table()
+```
+
+
+```{r, fig.height=10, fig.width=15}
+VlnPlot(data400, c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)"),
+        group.by = "feature_call", assay = "AUC", pt.size = 0)
+```
+
+```{r, fig.height=10, fig.width=15}
+VlnPlot(data400, c("Smad1(+)","Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)"),
+        group.by = "feature_call", assay = "AUC",  pt.size = 0)
+```
+
+```{r}
+cellClusters <- data400@meta.data
+# Split the cells by cluster:
+cellsPerCluster <- split(rownames(cellClusters), cellClusters[,"feature_call"]) 
+# Calculate average expression:
+AUCmatDS <- AUCmat[,colnames(data400)]
+regulonActivity_byCellType <- sapply(cellsPerCluster,
+                                     function(cells) rowMeans(AUCmatDS[,cells]))
+# Scale expression:
+regulonActivity_byCellType_Scaled <- t(scale(t(regulonActivity_byCellType), center = T, scale=T))
+regulonActivity_byCellType_Scaled <- na.omit(regulonActivity_byCellType_Scaled)
+```
+
+```{r, fig.height=20, fig.width=4}
+Heatmap(regulonActivity_byCellType_Scaled, name="Scaled\nRegulon\nActivity",
+                       row_names_gp=grid::gpar(fontsize=6))
+```
+
+```{r, fig.height=20, fig.width=4}
+Heatmap(regulonActivity_byCellType, name="Scaled\nRegulon\nActivity",
+                       row_names_gp=grid::gpar(fontsize=6))
+```
+
+```{r, fig.height=5, fig.width=7}
+regulonSubset <- c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)",
+                   "Smad1(+)","Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)")
+
+regulonActivity_byCellType_Scaled_subset <- regulonActivity_byCellType_Scaled[regulonSubset,]
+
+Heatmap(regulonActivity_byCellType_Scaled_subset, name="Scaled\nRegulon\nActivity",
+                       row_names_gp=grid::gpar(fontsize=6))
+```
+
+```{r, fig.height=5, fig.width=6}
+regulonSubset <- c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)",
+                   "Smad1(+)","Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)",
+                   "Irf3(+)","Irf4(+)","Irf5(+)","Irf6(+)","Irf7(+)","Irf8(+)",
+                   "Irf9(+)","Nfkb1(+)")
+
+regulonActivity_byCellType_Scaled_subset <- regulonActivity_byCellType_Scaled[regulonSubset,]
+
+Heatmap(regulonActivity_byCellType_Scaled_subset, name="Scaled\nRegulon\nActivity",
+                       row_names_gp=grid::gpar(fontsize=6),
+                      cluster_columns = F)
+```
+
+```{r}
+regulonActivity_byCellTypeTidy <- regulonActivity_byCellType %>%
+  as_tibble(rownames = "regulons") %>%
+  pivot_longer(-regulons, names_to = "feature_call", values_to = "AUC") %>%
+  mutate(feature_gene = gsub("\\..*","",feature_call))
+  
+
+regulonActivity_byCellTypeTidy %>%
+  filter(regulons %in% c("Stat1(+)","Stat2(+)","Stat3(+)","Stat4(+)","Stat5a(+)","Stat6(+)")) %>%
+  ggplot(aes(x = regulons, y = AUC, fill = feature_gene)) +
+    stat_summary(fun="mean", geom="bar", position = "dodge") +
+    geom_point(position = position_dodge(width = .9)) +
+    scale_fill_brewer(palette = "Dark2") +
+    scale_y_continuous(expand = c(0,0)) +
+    ylim(0,0.1)
+
+regulonActivity_byCellTypeTidy %>%
+  filter(regulons %in% c("Smad3(+)","Smad4(+)","Smad5(+)","Smad7(+)")) %>%
+  ggplot(aes(x = regulons, y = AUC, fill = feature_gene)) +
+    stat_summary(fun="mean", geom="bar", position = "dodge") +
+    geom_point(position = position_dodge(width = .9)) +
+    scale_fill_brewer(palette = "Dark2") +
+    scale_y_continuous(expand = c(0,0)) +
+    ylim(0,0.1)
+```
+
+```{r}
+regulonActivity_byCellTypeTidy %>%
+  filter(regulons %in% c("Stat6(+)")) %>%
+  ggplot(aes(x = regulons, y = AUC, fill = feature_gene)) +
+    stat_summary(fun="mean", geom="bar", position = "dodge") +
+    geom_point(position = position_dodge(width = .9)) +
+    scale_fill_brewer(palette = "Dark2") +
+    scale_y_continuous(expand = c(0,0))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
